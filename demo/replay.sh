@@ -35,7 +35,9 @@ hook() { # hook-script fixture
 }
 tests() { # summary of the unit tests, without timings or paths
   (cd "$work" && npm run --silent test 2>&1 || true) |
-    sed -E 's/ \([0-9.]+m?s\)//' | grep -E '^(✖|ℹ (pass|fail))' | awk '!seen[$0]++' | sed 's/^/   /'
+    sed -E 's/ \([0-9.]+m?s\)//; s/^ +(actual|expected): /  \1: /' |
+    grep -E '^(✖|ℹ (pass|fail)|  (actual|expected): )' | grep -v 'failing tests:' |
+    awk '!seen[$0]++' | sed 's/^/   /'
 }
 
 rm -rf "$repo/.demo-run"
