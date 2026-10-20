@@ -40,8 +40,7 @@ describe("gates", () => {
     "KNOWN_BUGS.md",
     "node_modules/.bin/tsc",
   ]) {
-    test(`blocks writing ${file}`, () =>
-      assert.match(write(repo, file) ?? "", /part of the gates/));
+    test(`blocks writing ${file}`, () => assert.match(write(repo, file) ?? "", /one of the gates/));
   }
 
   test("resolves relative paths against the session's cwd", () => {

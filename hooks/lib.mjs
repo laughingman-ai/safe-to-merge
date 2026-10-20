@@ -262,6 +262,5 @@ export const LOCKED_TEST_REASON =
   "already committed. Change the code under src/ until that test passes. Do not change the test.";
 
 export const GATE_REASON =
-  "That's part of the gates (.claude/, .github/, hooks/, node_modules/, package.json and the " +
-  "other config files, the verify, test-lock, review, and agent scripts, KNOWN_BUGS.md). " +
-  "Agents can't change the gates; a human changes them through review.";
+  "That's one of the gates (listed in CLAUDE.md). Agents can't change the gates; a human " +
+  "changes them through review.";

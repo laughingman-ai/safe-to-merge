@@ -27,7 +27,8 @@ time:
 
 5. It deletes the hooks folder
    Bash: rm -rf hooks
-   BLOCKED  hooks. That's part of the gates (.claude/, .github/, hooks/, node_modules/, ...
+   BLOCKED  hooks. That's one of the gates (listed in CLAUDE.md). Agents can't change the
+            gates; a human changes them through review.
 
 8. It tries to finish with the test still red
    Stop: the verify gate runs node scripts/verify.mjs
