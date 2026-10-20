@@ -31,7 +31,7 @@ if (pre?.permissionDecision === "deny") {
     /^(✖ (?!failing tests:)|actual: |expected: |VERIFY FAILED)/.test(l),
   );
   console.log(`   BLOCKED  ${wrap(lines[0])}`);
-  for (const line of new Set(detail)) console.log(`${INDENT}${line}`);
+  for (const line of new Set(detail)) console.log(`${INDENT}${line.replace(/,$/, "")}`);
 } else {
   console.log("   allowed");
 }
