@@ -106,7 +106,7 @@ export function repoPaths(
 }
 
 /** Directories and files that define the gates. An agent never changes these. */
-export const GATE_DIRS = [".claude", ".github", "hooks", "node_modules"];
+export const GATE_DIRS = [".claude", ".git", ".github", "hooks", "node_modules"];
 export const GATE_FILES = [
   "KNOWN_BUGS.md",
   "package.json",

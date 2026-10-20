@@ -47,52 +47,52 @@ real agent, see [demo/LIVE.md](demo/LIVE.md).
 
 There are two layers, and they do different jobs.
 
-**The boundary** is what an agent can't get past even if it tries everything:
+**The boundary** is the part that holds on GitHub, outside the agent's session:
 
-| Layer                             | What it does                                                                                                                                                                                                                                              |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CI checks bound to GitHub Actions | `verify` and `review/fresh-context` run in Actions, and the rules on `main` accept them only from GitHub Actions (app 15368). A personal or agent token can't post them.                                                                                  |
-| The fresh-context review          | `.github/workflows/review.yml` runs a new Claude Code process with read-only tools on the PR head. Its instructions, schema, and `KNOWN_BUGS.md` come from `main`, and the diff is passed as delimited, untrusted data. It runs only for PRs into `main`. |
-| The rules on `main`               | GitHub rulesets: no direct pushes, force pushes, or deletion; both checks green on an up-to-date head; one approval plus code-owner review.                                                                                                               |
-| CODEOWNERS                        | Changes to the gates (`.claude/`, `.github/`, `hooks/`, `scripts/`, config, `KNOWN_BUGS.md`) need the owner's review.                                                                                                                                     |
-| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)): no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner.                                                          |
+| Layer                             | What it does                                                                                                                                                                                                                                                                                                                             |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CI checks bound to GitHub Actions | `verify` and `review/fresh-context` run in Actions, and the rules on `main` accept them only from GitHub Actions (app 15368). A personal or agent token can't post them.                                                                                                                                                                 |
+| The fresh-context review          | `.github/workflows/review.yml` runs only for PRs into `main`. Its instructions, schema, and `KNOWN_BUGS.md` come from `main`. Claude Code starts in an empty directory with no project settings, reads a read-only copy of the PR with `.claude/`, `.mcp.json`, and `CLAUDE.md` removed, and gets the diff as delimited, untrusted data. |
+| The rules on `main`               | GitHub rulesets: no direct pushes, force pushes, or deletion; both checks green on an up-to-date head; one approval plus code-owner review.                                                                                                                                                                                              |
+| CODEOWNERS                        | Changes to the gates (`.claude/`, `.github/`, `hooks/`, `scripts/`, config, `KNOWN_BUGS.md`) need the owner's review.                                                                                                                                                                                                                    |
+| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)): no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner. **Not set up yet; see "Who can merge".**                                                                                                |
 
-**Defense in depth** is the hooks in `.claude/settings.json`. They catch the common
-shortcuts early, inside the session, and tell the agent why, so it fixes the code instead
-of fighting the gates:
+**Defense in depth** is the hooks in `.claude/settings.json`. They catch common shortcuts
+early, inside the session, and tell the agent why, so it fixes the code instead of
+fighting the gates. They are a filter, not a sandbox:
 
-| Hook                                                            | Catches                                                                                                                                                                                  |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hooks/guard-bash.mjs` (PreToolUse: Bash, Monitor, PowerShell)  | pushing to `main` or force pushing; merging, approving, and gh API writes; rewriting history on a branch with locked tests; touching the gates; printing tokens; credentials in commands |
-| `hooks/guard-files.mjs` (PreToolUse: Edit, Write, NotebookEdit) | edits to the gates or locked tests, through symlinks too; `.env` files; credentials in files                                                                                             |
-| `hooks/format.mjs` (PostToolUse)                                | formatting noise                                                                                                                                                                         |
-| `hooks/verify-gate.mjs` (Stop)                                  | ending a session while `node scripts/verify.mjs` fails                                                                                                                                   |
+| Hook                                                            | Catches common forms of                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hooks/guard-bash.mjs` (PreToolUse: Bash, Monitor, PowerShell)  | pushing to `main` or force pushing; merging, approving, and gh API writes; rewriting history on a branch with locked tests; changing the gates directly, through git (patches, other branches, config), or through archives; printing tokens; credentials in commands |
+| `hooks/guard-files.mjs` (PreToolUse: Edit, Write, NotebookEdit) | edits to the gates or locked tests, through symlinks too; `.env` files; credentials in files                                                                                                                                                                          |
+| `hooks/format.mjs` (PostToolUse)                                | formatting noise                                                                                                                                                                                                                                                      |
+| `hooks/verify-gate.mjs` (Stop)                                  | ending a session while `node scripts/verify.mjs` fails                                                                                                                                                                                                                |
 
-The shell guard doesn't try to recognize every dangerous command. It follows a
-conservative policy. It blocks:
-
-- piping or redirecting into a shell or interpreter, and `source`
-- shell expansion (`$`, backticks, `~`, `{a,b}`) in any command that can write, except in
-  commit messages and PR text
-- naming a gate in any command that can write
-- `gh api` with any method but GET, `gh api graphql`, and `gh alias`
-
-Read-only commands (`cat`, `ls`, `grep`, `rg`, `git diff`, `git log`, and a few more) run
-freely. Every hook is tested in `hooks/test/`, and `verify` runs those tests. The
-PreToolUse hooks fail closed: an internal error blocks the action, and
-`"onFailure": "block"` blocks it if the hook can't run at all (Claude Code v2.1.295+).
+Rather than list every dangerous command, the shell guard leans conservative. It blocks
+piping into a shell or interpreter, `source`, `trap`, and shell expansion in commands that
+can write files. Expansion is still fine in commit messages, PR text, variable
+assignments, and `cd`. It also blocks gh API writes and `gh alias`, and changing git config
+or settings that change what commands run. Read-only commands (`cat`, `ls`, `grep`, `rg`,
+`git diff`, `git log`, and a few more) run freely. The hooks are tested in `hooks/test/`,
+and `verify` runs those tests. The PreToolUse hooks fail closed: an internal error blocks
+the action, and `"onFailure": "block"` blocks it if the hook can't run at all (Claude Code
+v2.1.295+).
 
 `node scripts/verify.mjs` is the single definition of done. CI runs it directly, not
 through an npm script, and the Stop hook runs it too.
 
 ## Who can merge
 
-**Today the agent and the owner are the same GitHub user, so the owner merges every PR
-with the admin bypass on the "main: human approval" rule.** An agent session holding the
-owner's token could reach that bypass too. The hooks catch the common ways it might try,
-but the fix is the agent's own identity: once the GitHub App is set up, the agent works as
-`laughingman-agent[bot]` through `scripts/agent-session.sh`, its PRs need the owner's
-approval, and the bypass can be removed. The checks rule has no bypass for anyone.
+**Until the agent has its own GitHub App identity, it shares the owner's identity.** The
+agent's session uses the owner's GitHub token, so it could reach anything the owner can,
+including the admin bypass on the "main: human approval" rule. The hooks catch the common
+ways it might try, but they are not what stops it. Until the App exists, the real stop is
+the owner reviewing what gets merged.
+
+Today the owner merges every PR with that admin bypass, because nobody else can approve the
+owner's PRs. Once the GitHub App is set up, the agent works as `laughingman-agent[bot]`
+through `scripts/agent-session.sh`, its PRs need the owner's approval, and the bypass can be
+removed. The checks rule has no bypass for anyone.
 
 ## Why it's built this way
 
@@ -111,9 +111,9 @@ approval, and the bypass can be removed. The checks rule has no bypass for anyon
 
 ## Limits, stated plainly
 
-- **The shell guard is a filter, not a sandbox.** It can't see what a script file the agent
-  writes and then runs will do. It also can't see values computed at run time and passed
-  through variables, files, or pipes into a command it allows. That's accepted risk:
+- **The shell guard is a filter, not a sandbox.** It catches common shortcuts. It can't see
+  what a script file the agent writes and then runs will do, or what a program it allows
+  does with values computed at run time and passed through variables, files, or pipes. That's accepted risk:
   anything that reaches the repo still has to pass CI, the review, and the rules on `main`.
 - PowerShell gets a coarser check than POSIX shells. Any command that names a protected
   path, runs a string, or reads `$env:` is blocked.

@@ -9,8 +9,10 @@ Two owner steps make the rules on `main` hold against an agent, not just guide i
 2. **An Anthropic API key for the CI reviewer**, so `review/fresh-context` runs in GitHub
    Actions, where a personal token can't forge it.
 
-Until step 1 is done, the owner merges every PR using the admin bypass on the
-"main: human approval" rule, and the hooks are what stop the agent from doing the same.
+Until step 1 is done, the agent shares the owner's GitHub identity, so it could reach
+anything the owner can, including the admin bypass on the "main: human approval" rule. The
+hooks catch the common ways it might try, but they are not a boundary; the owner reviewing
+what gets merged is. The owner merges every PR with that bypass until then.
 
 ## 1. The agent's GitHub App
 

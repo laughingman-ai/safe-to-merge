@@ -5,8 +5,12 @@ name: review
 # personal or agent token can't forge it.
 #
 # Only PRs into main are reviewed: main always has the reviewer, so its instructions,
-# schema, and KNOWN_BUGS.md come from the base checkout (trusted/), and the PR head (pr/) is
-# only read, never run. A PR into another branch gets no review job and no API key.
+# schema, and KNOWN_BUGS.md come from the base checkout (trusted/). The PR head (pr/) is
+# checked out as files and not executed (except the hash-pinned bootstrap below). Claude Code reads a read-only copy of them with
+# .claude/, .mcp.json, CLAUDE.md, and .git removed, starts in an empty directory, and loads
+# no project settings (--setting-sources user), so nothing in the PR can configure it: no
+# env block, no apiKeyHelper, no hooks, no MCP servers. ANTHROPIC_BASE_URL is pinned below
+# as well. A PR into another branch gets no review job and no API key.
 #
 # This workflow file itself comes from the PR, which is why .github/ is a gate: agents
 # can't edit it (hooks), the agent's GitHub App has no Workflows permission, and changes
@@ -57,14 +61,15 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: https://api.anthropic.com
           TRUSTED_DIR: ${{ github.workspace }}/pr
           REVIEW_NOTE: "_Bootstrap review: main had no reviewer yet, so this PR's reviewer files ran, after matching the pinned hashes in review.yml._"
         run: |
           cd pr
           sha256sum -c - <<'PINNED'
           6adc9257090e9b06f04f8028919b8fe157b01f23dbe9e5ec01688be5cdf78130  scripts/ci-review.sh
-          1a3cb9eaa3e0fab35043da2983123c268e83a548977337d0f264d9254025bd8e  scripts/run-reviewer.sh
-          e8f9792bbce44b56f56264ddc9add4779107d8c3fc52ec18b24c8d51bb0ea909  scripts/review-prompt.md
+          7844bd7737d27a048a8fab5eb917f23483eb1e1d9f049f8b2a4775ed2c3417ee  scripts/run-reviewer.sh
+          91aa6f35f094edcaf8ad934f80d7faee915203dd8eb3295759b23b1ab2c08406  scripts/review-prompt.md
           da6b4a444a4b4539f0345f3e4aa6e66930269cc4bd33c0f15c9557688ec70c4d  scripts/review-schema.json
           d376ccb5f52d3618c6351afc960460bdeee6d9f85c23ec80c200d2d666502535  KNOWN_BUGS.md
           PINNED
@@ -76,6 +81,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: https://api.anthropic.com
         run: bash trusted/scripts/ci-review.sh
       - name: No reviewer on the base branch
         if: ${{ github.event.pull_request.number != 2 && hashFiles('trusted/scripts/run-reviewer.sh') == '' }}

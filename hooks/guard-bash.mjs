@@ -11,11 +11,18 @@
 //   2. A command that can write (anything not on the short read-only list) is blocked if its
 //      arguments use shell expansion ($, backticks, ~, {a,b}), if a glob could reach a gate,
 //      or if it names a gate (or a locked test). Destructive commands also may not name a
-//      directory that contains a gate, or the repo root.
+//      directory that contains a gate, or the repo root. Expansion is fine in commit
+//      messages, PR text, variable assignments, and `cd` (after which relative writes are
+//      blocked, since the guard no longer knows where they land).
 //   3. `gh api` with any method but GET, any fields, --input, or graphql; `gh alias`; and gh
 //      commands it doesn't recognize (aliases, extensions) are blocked outright.
-// On top of that: no pushes to main or force pushes, no history rewrites on a locked fix/*
-// branch, no credentials in commands, and nothing that prints the session's tokens.
+// On top of that it catches: pushes to main and force pushes; history rewrites on a locked
+// fix/* branch; git commands that would bring gate changes in from a patch or another ref
+// (apply, checkout, switch, reset, restore, merge, cherry-pick, stash pop); git config
+// changes and `git -c` beyond user.*/color.*; environment variables that change what runs
+// (NODE_OPTIONS, PATH, LD_*, GIT_*, ...); `trap`; output-file flags pointing at a gate;
+// extracting archives or patches inside the repo; credentials in commands; and anything
+// that prints the session's tokens.
 //
 // What it can't see: a script file the agent writes and then runs, or values computed at
 // run time and passed through variables or pipes into a command it allows. That's accepted
@@ -252,6 +259,16 @@ const WRAPPERS = /** @type {Record<string, Record<string, number>>} */ ({
 });
 
 /**
+ * Environment variables that change what a command loads or runs, or which identity it
+ * uses. Setting one, even for a single command, can turn an allowed command into
+ * arbitrary code.
+ */
+const DANGEROUS_ENV =
+  /^(LD_\w+|DYLD_\w+|BASH_ENV|ENV|BASH_FUNC_\S+|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|PS4|IFS|PATH|NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|PYTHON\w*|PERL5\w*|PERLLIB|RUBY\w*|GIT_(?!AUTHOR_|COMMITTER_)\w+|CLAUDE_\w+|GH_\w+|GITHUB_\w+|npm_config_\w+|NPM_CONFIG_\w+)=/;
+const dangerousEnvReason = (/** @type {string} */ a) =>
+  `Blocked: setting ${a.split("=")[0]} changes what commands load or run, or which credentials they use.`;
+
+/**
  * Peel wrappers off a command. Returns the inner words, a script string when the wrapper
  * runs one (bash -c, eval, env -S), or a reason to block.
  * @returns {{ words: Word[] } | { script: string } | { block: string }}
@@ -259,7 +276,10 @@ const WRAPPERS = /** @type {Record<string, Record<string, number>>} */ ({
 function unwrap(/** @type {Word[]} */ words) {
   let w = words;
   for (let guard = 0; guard < 16; guard++) {
-    while (w.length && isAssignment(w[0])) w = w.slice(1);
+    while (w.length && isAssignment(w[0])) {
+      if (DANGEROUS_ENV.test(w[0].text)) return { block: dangerousEnvReason(w[0].text) };
+      w = w.slice(1);
+    }
     const name = base(w[0]?.text);
     if (name === "eval") {
       if (w.slice(1).some((x) => x.expand))
@@ -285,8 +305,10 @@ function unwrap(/** @type {Word[]} */ words) {
       if (name === "env" && (a === "-S" || a === "--split-string")) {
         return { script: texts(w.slice(i + 1)).join(" ") };
       }
-      if (name === "env" && isAssignment(w[i])) i++;
-      else if (a in options) i += 1 + options[a];
+      if (name === "env" && isAssignment(w[i])) {
+        if (DANGEROUS_ENV.test(w[i].text)) return { block: dangerousEnvReason(w[i].text) };
+        i++;
+      } else if (a in options) i += 1 + options[a];
       else if (a.startsWith("-") && a !== "-") i++;
       else break;
     }
@@ -329,6 +351,23 @@ const TOKEN_VARS =
 
 /** Git global options that take a value. */
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+/** Git global options that point git at other config, repos, or programs. */
+const GIT_BLOCKED_OPTIONS =
+  /^--(git-dir|work-tree|exec-path|super-prefix|namespace|config-env|attr-source)(=|$)/;
+/** The only settings `git -c` may override: they can't run anything. */
+const GIT_SAFE_CONFIG = /^(user|color)\.[^=]*(=|$)/i;
+/** Git commands that can change the gates in ways the guard can't check. */
+const GIT_BLOCKED = new Set([
+  "am",
+  "pull",
+  "bisect",
+  "read-tree",
+  "update-index",
+  "checkout-index",
+  "symbolic-ref",
+  "fast-import",
+  "submodule",
+]);
 /** Git commands an alias can't shadow (git ignores aliases with these names). */
 const GIT_BUILTINS = new Set(
   (
@@ -419,6 +458,201 @@ function checkHistory(/** @type {string[]} */ args, /** @type {string} */ dir) {
     );
   }
   return null;
+}
+
+/** Whether `git config ...` only reads. */
+function isConfigRead(/** @type {string[]} */ args) {
+  const rest = args.slice(1);
+  if (["get", "list"].includes(rest[0] ?? "")) return true;
+  if (rest.some((a) => /^(--get(-all|-regexp|-urlmatch)?|-l|--list)$/.test(a))) return true;
+  const VALUE_FLAGS = new Set(["--file", "-f", "--blob", "--type", "--default"]);
+  const operands = rest.filter((a, i) => !a.startsWith("-") && !VALUE_FLAGS.has(rest[i - 1] ?? ""));
+  return (
+    operands.length === 1 &&
+    !rest.some((a) =>
+      /^--(add|unset|unset-all|replace-all|rename-section|remove-section|edit)$|^-e$/.test(a),
+    )
+  );
+}
+
+/** Both sides of a `--numstat` path, which shows renames as `a => b` or `dir/{a => b}`. */
+function numstatPaths(/** @type {string} */ p) {
+  const brace = p.match(/^(.*)\{(.*) => (.*)\}(.*)$/);
+  if (brace)
+    return [brace[1] + brace[2] + brace[4], brace[1] + brace[3] + brace[4]].map((x) =>
+      x.replace(/\/\//g, "/"),
+    );
+  return p.includes(" => ") ? p.split(" => ") : [p];
+}
+
+/** Files that differ between two revisions, limited to `paths`; null if git can't tell. */
+function changedFiles(
+  /** @type {string} */ dir,
+  /** @type {string[]} */ range,
+  /** @type {string[]} */ paths = [],
+) {
+  try {
+    return git(dir, ["diff", "--name-only", ...range, "--", ...paths])
+      .split("\n")
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+function isCommit(/** @type {string} */ dir, /** @type {string} */ ref) {
+  try {
+    git(dir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why bringing files from another revision or a patch into the working tree is not allowed,
+ * or null. Checkout, switch, reset, restore, merge, cherry-pick, stash pop/apply, and apply
+ * are allowed only when what they'd bring in doesn't touch a gate (or a locked test).
+ */
+function checkBringIn(
+  /** @type {string[]} */ args,
+  /** @type {string} */ dir,
+  /** @type {string} */ root,
+) {
+  const [sub, ...rest] = args;
+  if (GIT_BLOCKED.has(sub)) {
+    return (
+      `Blocked: git ${sub} can change the gates in ways the guard can't check.` +
+      (sub === "pull" ? " Use git fetch, then git merge <ref>, which is checked." : "")
+    );
+  }
+  const VALUE_FLAGS = new Set([
+    "-b",
+    "-B",
+    "-c",
+    "-C",
+    "--orphan",
+    "-m",
+    "-s",
+    "--source",
+    "--strategy",
+    "-X",
+    "--strategy-option",
+    "-F",
+    "--file",
+    "-S",
+  ]);
+  /** @type {string[]} */
+  const operands = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--") break;
+    if (a.startsWith("-")) {
+      if (VALUE_FLAGS.has(a)) i++;
+      continue;
+    }
+    operands.push(a);
+  }
+  const after = rest.includes("--") ? rest.slice(rest.indexOf("--") + 1) : [];
+  const touches = (/** @type {string[] | null} */ files, /** @type {string} */ what) => {
+    if (files === null) {
+      return `Blocked: the guard couldn't compare ${what} with HEAD, so it can't tell whether it changes the gates.`;
+    }
+    const hit = files.find(
+      (f) => touchesGate(f, false) || (touchesTests(f, false) && testLock(root).locked),
+    );
+    return hit
+      ? `Blocked: ${what} would change ${hit}. ${touchesGate(hit, false) ? GATE_REASON : LOCKED_TEST_REASON}`
+      : null;
+  };
+
+  if (sub === "apply") {
+    if (operands.length === 0)
+      return "Blocked: git apply from stdin can't be checked. Write the patch to a file first.";
+    let out;
+    try {
+      out = git(dir, ["apply", "--numstat", ...operands]);
+    } catch {
+      return "Blocked: git apply --numstat couldn't read the patch, so the guard can't tell what it changes.";
+    }
+    const files = out
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((l) => numstatPaths(l.split("\t")[2] ?? ""));
+    return touches(files, "this patch");
+  }
+  if (sub === "merge") {
+    for (const ref of operands) {
+      const reason = touches(changedFiles(dir, [`HEAD...${ref}`]), `merging ${ref}`);
+      if (reason) return reason;
+    }
+  }
+  if (sub === "cherry-pick" || sub === "revert") {
+    for (const c of operands) {
+      const range = c.includes("..") ? c.split(/\.{2,3}/) : [`${c}^`, c];
+      const reason = touches(changedFiles(dir, range), `${sub} ${c}`);
+      if (reason) return reason;
+    }
+  }
+  if (sub === "stash" && ["pop", "apply", "branch"].includes(operands[0] ?? "")) {
+    const ref = operands[operands[0] === "branch" ? 2 : 1] ?? "stash@{0}";
+    return touches(changedFiles(dir, ["HEAD", ref]), `applying ${ref}`);
+  }
+  if (sub === "checkout" || sub === "switch" || sub === "reset") {
+    let ref = "";
+    let paths = after;
+    const creates = rest.some((a) => ["-b", "-B", "-c", "-C", "--orphan"].includes(a));
+    if (creates || rest.includes("--")) ref = operands[0] ?? "";
+    else if (operands[0] && isCommit(dir, operands[0])) {
+      ref = operands[0];
+      if (sub !== "switch") paths = operands.slice(1);
+    }
+    if (ref) return touches(changedFiles(dir, ["HEAD", ref], paths), `git ${sub} ${ref}`);
+  }
+  if (sub === "restore") {
+    const source = rest.flatMap((a, i) =>
+      a === "-s" || a === "--source"
+        ? [rest[i + 1] ?? ""]
+        : a.startsWith("--source=")
+          ? [a.slice(9)]
+          : [],
+    )[0];
+    if (source)
+      return touches(
+        changedFiles(dir, ["HEAD", source], [...operands, ...after]),
+        `restoring from ${source}`,
+      );
+  }
+  return null;
+}
+
+/** Whether the gates have no changes in the working tree or index (`git diff HEAD`). */
+function gatesClean(/** @type {string} */ dir) {
+  const files = changedFiles(dir, ["HEAD"]);
+  return files !== null && !files.some((f) => touchesGate(f, false));
+}
+
+/** Node flags whose next word is a value (a path, module, or pattern), not a test file. */
+const NODE_VALUE_FLAGS = new Set(
+  (
+    "-r --require --import --loader --experimental-loader --env-file --test-reporter " +
+    "--test-reporter-destination --test-name-pattern --test-skip-pattern --test-concurrency " +
+    "--test-timeout --test-shard --input-type -e --eval -p --print -o --output"
+  ).split(" "),
+);
+
+/** Archive and patch tools that write many files at once. */
+function extracts(/** @type {string[]} */ words) {
+  const name = base(words[0]);
+  const rest = words.slice(1);
+  if (name === "tar" || name === "bsdtar") {
+    return (
+      rest.some((a) => /^-[a-zA-Z]*x|^--(extract|get)$/.test(a)) || /^[a-wyz]*x/.test(rest[0] ?? "")
+    );
+  }
+  if (name === "cpio") return rest.some((a) => /^-[a-zA-Z]*i|^--extract$/.test(a));
+  if (["7z", "7za", "7zz"].includes(name)) return ["x", "e"].includes(rest[0] ?? "");
+  return ["unzip", "patch", "gunzip", "bunzip2", "unxz"].includes(name);
 }
 
 const GH_COMMANDS = new Set(
@@ -557,14 +791,15 @@ function checkLeak(/** @type {string[]} */ words, /** @type {string} */ line) {
 
 /**
  * Why a command line is not allowed, or null.
- * @param {string} line
+ * @param {string} input
  * @param {string} root the repo root
  * @param {string} [cwd] where the command runs (the hook input's cwd)
  * @param {number} [depth]
  * @returns {string | null}
  */
-export function check(line, root, cwd = root, depth = 0) {
+export function check(input, root, cwd = root, depth = 0) {
   if (depth > MAX_DEPTH) return "Blocked: commands nested this deeply can't be checked.";
+  const line = input.replace(/\r/g, "");
   const secret = findSecret(line);
   if (secret) {
     return `Blocked: this command contains what looks like ${secret}. Read credentials from the vault at run time.`;
@@ -577,11 +812,14 @@ export function check(line, root, cwd = root, depth = 0) {
   }
   const lockedRoot = () => testLock(root).locked;
 
-  let here = cwd;
+  /** @type {string | null} */
+  let here = cwd; // null after `cd` to an expansion: relative paths can't be resolved
   for (const command of parse(line)) {
     const inner = unwrap(command.words);
     if ("block" in inner) return inner.block;
     if ("script" in inner) {
+      if (here === null)
+        return "Blocked: after cd to an expansion, the guard can't follow nested commands.";
       const reason = check(inner.script, root, here, depth + 1);
       if (reason) return reason;
       continue;
@@ -598,6 +836,14 @@ export function check(line, root, cwd = root, depth = 0) {
 
     const leak = checkLeak(words, line);
     if (leak) return leak;
+    if (name === "trap") {
+      return "Blocked: trap runs a command later, when the guard isn't looking.";
+    }
+    if (["export", "declare", "typeset", "readonly", "local"].includes(name)) {
+      const bad = words.slice(1).find((a) => DANGEROUS_ENV.test(a));
+      if (bad) return dangerousEnvReason(bad);
+      continue; // shell variables only: expansion is fine here
+    }
 
     // 1. Interpreters fed from stdin, and sourcing files.
     if (name === "source" || name === ".") {
@@ -613,24 +859,40 @@ export function check(line, root, cwd = root, depth = 0) {
     }
 
     if (name === "cd" || name === "pushd") {
-      if (ws.slice(1).some((w) => w.expand))
-        return "Blocked: cd to an expansion can't be followed.";
       const target = words[1];
-      here = target && target !== "-" ? path.resolve(here, target) : process.env.HOME || here;
+      if (ws.slice(1).some((w) => w.expand)) here = null;
+      else if (here !== null) {
+        here = target && target !== "-" ? path.resolve(here, target) : process.env.HOME || here;
+      } else if (target && path.isAbsolute(target)) here = target;
       continue;
     }
 
-    let dir = here;
+    const readOnlyName =
+      READ_ONLY.has(name) || (name === "git" && GIT_READ_ONLY.has(words[1] ?? ""));
+    if (
+      here === null &&
+      (!readOnlyName || command.redirects.some((r) => !path.isAbsolute(r.text)))
+    ) {
+      return (
+        "Blocked: after cd to an expansion, the guard can't resolve where this command writes. " +
+        "cd to a literal path first."
+      );
+    }
+    let dir = here ?? root;
     let gitSub = "";
     if (name === "git") {
-      const parts = gitParts(words, here);
+      const parts = gitParts(words, dir);
       dir = parts.dir;
-      if (parts.configs.some((c) => /^alias\./i.test(c) || c.startsWith("--config-env"))) {
-        return "Blocked: inline git config (-c alias.* or --config-env) can hide what a command does.";
+      const globalOptions = words.slice(1, words.length - parts.args.length);
+      if (globalOptions.some((o) => GIT_BLOCKED_OPTIONS.test(o))) {
+        return "Blocked: that git option points git at other config, repos, or programs.";
+      }
+      if (parts.configs.some((c) => !GIT_SAFE_CONFIG.test(c))) {
+        return "Blocked: git -c may only set user.* and color.*; other settings can run commands.";
       }
       let args = parts.args;
-      if (args[0] === "config" && args.some((a) => /^alias\./i.test(a))) {
-        return "Blocked: agents don't define git aliases; they can hide what a command does.";
+      if (args[0] === "config" && !isConfigRead(args)) {
+        return "Blocked: agents don't change git config; settings like core.fsmonitor and aliases run commands.";
       }
       if (args[0] && !GIT_BUILTINS.has(args[0])) {
         let alias = "";
@@ -657,7 +919,7 @@ export function check(line, root, cwd = root, depth = 0) {
         const reason = checkPush(args, dir);
         if (reason) return reason;
       }
-      const reason = checkHistory(args, dir);
+      const reason = checkHistory(args, dir) ?? checkBringIn(args, dir, root);
       if (reason) return reason;
     }
 
@@ -701,6 +963,39 @@ export function check(line, root, cwd = root, depth = 0) {
       return `Blocked: git clean with no path reaches the whole repo. ${GATE_REASON}`;
     }
 
+    if (extracts(words)) {
+      const target =
+        words.flatMap((a, i) =>
+          ["-C", "--directory", "-d"].includes(a)
+            ? [words[i + 1] ?? ""]
+            : /^--directory=/.test(a)
+              ? [a.slice(12)]
+              : /^-d./.test(a) && name !== "tar"
+                ? [a.slice(2)]
+                : [],
+        )[0] ?? ".";
+      if (repoPaths(root, dir, target).length > 0) {
+        return `Blocked: ${name} inside the repo can overwrite the gates. Extract or patch outside the repo, then copy files in by name.`;
+      }
+    }
+
+    // Flags that name an output file, on any command.
+    for (let i = 1; i < words.length; i++) {
+      const m = words[i].match(
+        /^(--[\w-]*(destination|output|outfile|out-file|outdir|out-dir|log-file)|-o)(=(.*))?$/,
+      );
+      if (!m) continue;
+      const value = m[3] ? m[4] : words[i + 1];
+      if (m[1] === "--test-reporter-destination" && !["stdout", "stderr"].includes(value ?? "")) {
+        return "Blocked: --test-reporter-destination writes a file; report to stdout instead.";
+      }
+      if (value && (m[3] ? ws[i].expand : ws[i + 1]?.expand)) {
+        return `Blocked: ${m[1]} names an expanded path, which the guard can't check.`;
+      }
+      const reason = value ? pathReason(root, dir, value, true) : null;
+      if (reason) return reason;
+    }
+
     const inline = checkInline(words, lockedRoot);
     if (inline) return inline;
 
@@ -725,6 +1020,16 @@ export function check(line, root, cwd = root, depth = 0) {
       repoPaths(root, dir, words[1]).some((rel) => touchesGate(rel, false));
     const testRunner = name === "node" && words.includes("--test");
     const destructive = DESTRUCTIVE.has(name) || (name === "git" && GIT_DESTRUCTIVE.has(gitSub));
+    // `git checkout .` / `git restore .` (no other ref) only resets the working tree to HEAD,
+    // which is harmless when the gates have no local changes.
+    const resetsToHead =
+      name === "git" &&
+      (gitSub === "checkout" || gitSub === "restore") &&
+      !words.some((a) => /^(-s|--source)(=|$)/.test(a)) &&
+      words
+        .slice(2)
+        .filter((a) => !a.startsWith("-"))
+        .every((a) => a === "." || a === "./");
 
     for (let i = 1; i < ws.length; i++) {
       const w = ws[i];
@@ -735,7 +1040,9 @@ export function check(line, root, cwd = root, depth = 0) {
           "{a,b}), so the guard can't tell what it touches. Use literal paths and single quotes."
         );
       }
-      if (testRunner || (runsGateScript && i === 1)) continue;
+      const positional = !w.text.startsWith("-") && !NODE_VALUE_FLAGS.has(ws[i - 1]?.text ?? "");
+      if ((testRunner && positional) || (runsGateScript && i === 1)) continue;
+      if (resetsToHead && (w.text === "." || w.text === "./") && gatesClean(dir)) continue;
       // A word is a path, or carries one after "=" (--output=x, of=x).
       const eq = w.text.indexOf("=");
       const values = w.text.startsWith("-") ? [] : [w.text];

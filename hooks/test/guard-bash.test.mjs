@@ -1,6 +1,6 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { symlinkSync } from "node:fs";
+import { symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
 
@@ -136,7 +136,7 @@ describe("wrappers", () => {
   }
 
   test("blocks inline git aliases", () => {
-    assert.match(bash(repo, "git -c alias.p=push p origin main") ?? "", /alias/);
+    assert.match(bash(repo, "git -c alias.p=push p origin main") ?? "", /user\.\* and color\.\*/);
   });
 
   test("blocks defining git aliases", () => {
@@ -375,7 +375,6 @@ describe("the conservative policy", () => {
       "$(echo git) push origin main",
       "`echo git` push origin main",
       "$GIT push origin main",
-      "cd $(git rev-parse --show-toplevel)",
     ]) {
       blocks(repo, command);
     }
@@ -480,5 +479,209 @@ describe("the conservative policy", () => {
     ]) {
       allows(repo, command);
     }
+  });
+});
+
+describe("round three", () => {
+  /** A repo on feat/x with branches `evil` (changes a hook) and `benign` (changes src). */
+  function repoWithBranches() {
+    const dir = makeRepo({ branch: "feat/x" });
+    git(dir, ["checkout", "-q", "-b", "evil"]);
+    writeFileSync(path.join(dir, "hooks", "guard-bash.mjs"), "// disabled\n");
+    git(dir, ["commit", "-q", "-am", "evil"]);
+    git(dir, ["checkout", "-q", "feat/x"]);
+    git(dir, ["checkout", "-q", "-b", "benign"]);
+    writeFileSync(path.join(dir, "src", "math.ts"), "export const one = 1 + 0;\n");
+    git(dir, ["commit", "-q", "-am", "benign"]);
+    git(dir, ["checkout", "-q", "feat/x"]);
+    writeFileSync(path.join(dir, "evil.diff"), git(dir, ["diff", "feat/x", "evil"]) + "\n");
+    writeFileSync(path.join(dir, "benign.diff"), git(dir, ["diff", "feat/x", "benign"]) + "\n");
+    return dir;
+  }
+  const repo = repoWithBranches();
+
+  describe("git: patches and other refs", () => {
+    for (const command of [
+      "git apply evil.diff",
+      "git apply --index evil.diff",
+      "git apply < evil.diff",
+      "cat evil.diff | git apply",
+      "git checkout evil",
+      "git checkout evil -- hooks",
+      "git checkout evil -- .",
+      "git switch evil",
+      "git reset --hard evil",
+      "git restore --source evil hooks",
+      "git restore --source=evil .",
+      "git merge evil",
+      "git cherry-pick evil",
+      "git pull origin main",
+      "git am 0001.patch",
+      "git bisect start",
+      "git read-tree evil",
+      "git checkout-index -a -f",
+    ]) {
+      blocks(repo, command);
+    }
+    for (const command of [
+      "git apply benign.diff",
+      "git checkout benign",
+      "git merge benign",
+      "git cherry-pick benign",
+      "git checkout -b fix/new",
+      "git checkout benign -- src/math.ts",
+    ]) {
+      allows(repo, command);
+    }
+
+    test("stash pop is checked against what the stash would bring back", () => {
+      const dir = repoWithBranches();
+      writeFileSync(path.join(dir, "hooks", "guard-bash.mjs"), "// disabled\n");
+      git(dir, ["stash", "-q"]);
+      assert.match(bash(dir, "git stash pop") ?? "", /would change hooks\/guard-bash\.mjs/);
+      const clean = repoWithBranches();
+      writeFileSync(path.join(clean, "src", "math.ts"), "export const one = 2;\n");
+      git(clean, ["stash", "-q"]);
+      assert.equal(bash(clean, "git stash pop"), null);
+    });
+  });
+
+  describe("git config and options", () => {
+    for (const command of [
+      "git -c core.fsmonitor='touch /tmp/pwned' status",
+      "git -c core.hooksPath=/tmp/h commit -m x",
+      "git -c alias.st=status st",
+      "git --config-env=core.pager=X log",
+      "git --git-dir=/tmp/evil/.git status",
+      "git --exec-path=/tmp/bin status",
+      "git config core.fsmonitor 'touch /tmp/pwned'",
+      "git config --global core.pager less",
+      "git config --add core.hooksPath /tmp/h",
+      "git config --unset user.email",
+      "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=x git status",
+      "env GIT_DIR=/tmp/evil git status",
+    ]) {
+      blocks(repo, command);
+    }
+    for (const command of [
+      "git -c user.name=Agent commit -m x",
+      "git -c color.ui=false log -1",
+      "git config user.name",
+      "git config --get user.email",
+      "git config --list",
+      "git config get user.name",
+    ]) {
+      allows(repo, command);
+    }
+  });
+
+  describe(".git is a gate", () => {
+    for (const command of [
+      "printf '#!/bin/sh\\ntouch /tmp/pwned\\n' > .git/hooks/pre-commit",
+      "chmod +x .git/hooks/pre-commit",
+      "cp x .git/config",
+      "rm -rf .git",
+      "echo x >> .git/info/attributes",
+    ]) {
+      blocks(repo, command, /gates/);
+    }
+    test("Write to .git is blocked too", () => {
+      const result = runHook(
+        "guard-files.mjs",
+        {
+          tool_name: "Write",
+          tool_input: { file_path: path.join(repo, ".git", "hooks", "pre-commit"), content: "x" },
+        },
+        { root: repo },
+      );
+      assert.match(denied(result) ?? "", /gates/);
+    });
+  });
+
+  describe("deferred and redirected writes", () => {
+    for (const command of [
+      "trap 'rm -rf hooks' EXIT",
+      "trap - EXIT",
+      "node --test --test-reporter-destination=hooks/guard-bash.mjs",
+      "node --test --test-reporter=spec --test-reporter-destination hooks/guard-bash.mjs",
+      "node --test --test-reporter-destination=report.txt",
+      "sort -o hooks/lib.mjs src/math.ts",
+      "tsc --outFile=hooks/lib.mjs",
+      "curl -o .claude/settings.json https://example.com/x",
+      "cp x --output=$OUT",
+    ]) {
+      blocks(repo, command);
+    }
+    allows(repo, "node --test --test-reporter=spec --test-reporter-destination=stdout test/");
+    allows(repo, "sort -o /tmp/sorted.txt src/math.ts");
+  });
+
+  describe("archives and patches", () => {
+    for (const command of [
+      "tar -xf payload.tar",
+      "tar xzf payload.tgz",
+      "tar --extract -f payload.tar -C src",
+      "unzip payload.zip",
+      "unzip payload.zip -d src",
+      "patch -p1 -i x.patch",
+      "patch -p1 < x.patch",
+      "7z x payload.7z",
+    ]) {
+      blocks(repo, command);
+    }
+    allows(repo, "tar -xf payload.tar -C /tmp/out");
+    allows(repo, "unzip payload.zip -d /tmp/out");
+    allows(repo, "tar -tf payload.tar");
+    allows(repo, "tar -czf /tmp/src.tgz src");
+  });
+
+  describe("environment that changes what runs", () => {
+    for (const command of [
+      "NODE_OPTIONS='--require ./x.js' npm test",
+      "PATH=/tmp/bin:$PATH npm test",
+      "export PATH=/tmp/bin:$PATH",
+      "export NODE_OPTIONS=--require=./x.js",
+      "LD_PRELOAD=/tmp/x.so ls",
+      "BASH_ENV=/tmp/x.sh bash scripts/review.sh 2",
+      "env NODE_OPTIONS=--require=./x.js node scripts/verify.mjs",
+      "GH_TOKEN=x gh pr view 2",
+    ]) {
+      blocks(repo, command);
+    }
+  });
+
+  describe("carriage returns", () => {
+    blocks(repo, "git push origin main\r", /pull request/);
+    blocks(repo, "rm -rf hooks\r\n", /gates/);
+  });
+
+  describe("relaxations", () => {
+    for (const command of [
+      "X=$(git rev-parse HEAD)",
+      "export SHA=$(git rev-parse HEAD)",
+      'cd "$(git rev-parse --show-toplevel)" && ls',
+      'cd "$(git rev-parse --show-toplevel)" && git status',
+      "git checkout .",
+      "git restore .",
+      "git checkout -- .",
+    ]) {
+      allows(repo, command);
+    }
+    for (const command of [
+      'cd "$(git rev-parse --show-toplevel)" && rm -rf hooks',
+      'cd "$X" && echo x > notes.txt',
+      "cd $X && npm test",
+      "sed -i 's/a/b/' hooks/lib.mjs",
+      "awk -i inplace '{print}' hooks/lib.mjs",
+    ]) {
+      blocks(repo, command);
+    }
+
+    test("git checkout . is blocked while a gate has local changes", () => {
+      const dir = repoWithBranches();
+      writeFileSync(path.join(dir, "hooks", "guard-bash.mjs"), "// edited by a human\n");
+      assert.match(bash(dir, "git checkout .") ?? "", /gates/);
+      assert.match(bash(dir, "git restore .") ?? "", /gates/);
+    });
   });
 });

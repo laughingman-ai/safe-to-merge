@@ -31,8 +31,8 @@ Don't try them:
 - pushing to `main`, force pushing, or deleting branches
 - merging or approving a PR, posting commit statuses or checks, or changing repo settings
 - editing tests after the reproduction is committed, or rewriting history to unlock them
-- changing the gates: `.claude/`, `.github/`, `hooks/`, `node_modules/`, `package.json` and
-  the other config files, `scripts/`, `KNOWN_BUGS.md`
+- changing the gates: `.claude/`, `.git/`, `.github/`, `hooks/`, `node_modules/`,
+  `package.json` and the other config files, `scripts/`, `KNOWN_BUGS.md`
 - writing `.env` or `.envrc` files, or putting a credential in a file or a command
 - finishing while `node scripts/verify.mjs` fails
 - piping into a shell or interpreter, `source`, or using `$`, backticks, `~`, or `{a,b}` in a
