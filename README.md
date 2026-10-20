@@ -55,7 +55,7 @@ There are two layers, and they do different jobs.
 | The fresh-context review          | `.github/workflows/review.yml` runs only for PRs into `main`. Its instructions, schema, and `KNOWN_BUGS.md` come from `main`. Claude Code starts in an empty directory with no project settings, reads a read-only copy of the PR with `.claude/`, `.mcp.json`, and `CLAUDE.md` removed, and gets the diff as delimited, untrusted data. |
 | The rules on `main`               | GitHub rulesets: no direct pushes, force pushes, or deletion; both checks green on an up-to-date head; one approval plus code-owner review.                                                                                                                                                                                              |
 | CODEOWNERS                        | Changes to the gates (`.claude/`, `.github/`, `hooks/`, `scripts/`, config, `KNOWN_BUGS.md`) need the owner's review.                                                                                                                                                                                                                    |
-| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)): no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner. **Not set up yet; see "Who can merge".**                                                                                                |
+| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)). **Not set up yet; see "Who can merge".** Once it exists: no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner.                                                                                |
 
 **Defense in depth** is the hooks in `.claude/settings.json`. They catch common shortcuts
 early, inside the session, and tell the agent why, so it fixes the code instead of
@@ -124,9 +124,14 @@ removed. The checks rule has no bypass for anyone.
   call in between, and each tool call resets the count. So an agent that keeps working
   keeps going, and one that only tries to stop is eventually let out with verify still
   red. CI runs the same verify, so that work can't merge.
-- A PR's workflow files come from the PR, so a PR could change what CI runs. That's why
-  `.github/` is a gate: the hooks catch agents editing it, the agent's App has no Workflows
-  permission, and CODEOWNERS requires the owner's review.
+- A PR's workflow files come from the PR, so a PR could change what CI runs, including
+  `review.yml`, which has the reviewer's API key in scope. That's why `.github/` is a gate:
+  the hooks catch agents editing it, CODEOWNERS requires the owner's review, and once the
+  agent's GitHub App exists, it will have no Workflows permission, so it can't push workflow
+  changes at all. **Until then, an agent on the owner's token that gets past the hooks could
+  change `review.yml` in a PR** and run its own code with the key. That's accepted risk
+  until the App exists; the key's workspace spend limit caps the damage, and the owner
+  reviews the PR before it merges.
 - The secrets guard matches known credential formats, including ones split across quotes.
   It can't see a credential assembled from variables at run time.
 - `scripts/agent-session.sh` hides the owner's credentials from `gh` and `git`, but the

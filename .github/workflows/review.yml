@@ -13,8 +13,9 @@ name: review
 # as well. A PR into another branch gets no review job and no API key.
 #
 # This workflow file itself comes from the PR, which is why .github/ is a gate: agents
-# can't edit it (hooks), the agent's GitHub App has no Workflows permission, and changes
-# need the code owner's review.
+# can't edit it (hooks), changes need the code owner's review, and once the agent's GitHub
+# App exists it will have no Workflows permission. Until then, an agent on the owner's token
+# that gets past the hooks could change this file in a PR; the key's spend limit caps that.
 
 on:
   pull_request:
@@ -68,7 +69,7 @@ jobs:
           cd pr
           sha256sum -c - <<'PINNED'
           6adc9257090e9b06f04f8028919b8fe157b01f23dbe9e5ec01688be5cdf78130  scripts/ci-review.sh
-          7844bd7737d27a048a8fab5eb917f23483eb1e1d9f049f8b2a4775ed2c3417ee  scripts/run-reviewer.sh
+          3cfccb6fb51dde861827ff9bc3037a5cf4f49b056d771b53e6d60987838f9620  scripts/run-reviewer.sh
           91aa6f35f094edcaf8ad934f80d7faee915203dd8eb3295759b23b1ab2c08406  scripts/review-prompt.md
           da6b4a444a4b4539f0345f3e4aa6e66930269cc4bd33c0f15c9557688ec70c4d  scripts/review-schema.json
           d376ccb5f52d3618c6351afc960460bdeee6d9f85c23ec80c200d2d666502535  KNOWN_BUGS.md

@@ -264,7 +264,7 @@ const WRAPPERS = /** @type {Record<string, Record<string, number>>} */ ({
  * arbitrary code.
  */
 const DANGEROUS_ENV =
-  /^(LD_\w+|DYLD_\w+|BASH_ENV|ENV|BASH_FUNC_\S+|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|PS4|IFS|PATH|NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|PYTHON\w*|PERL5\w*|PERLLIB|RUBY\w*|GIT_(?!AUTHOR_|COMMITTER_)\w+|CLAUDE_\w+|GH_\w+|GITHUB_\w+|npm_config_\w+|NPM_CONFIG_\w+)=/;
+  /^(LD_\w+|DYLD_\w+|BASH_ENV|ENV|EDITOR|VISUAL|PAGER|MANPAGER|LESSOPEN|LESSCLOSE|BROWSER|BASH_FUNC_\S+|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|PS4|IFS|PATH|NODE_OPTIONS|NODE_PATH|NODE_REPL_EXTERNAL_MODULE|PYTHON\w*|PERL5\w*|PERLLIB|RUBY\w*|GIT_(?!AUTHOR_|COMMITTER_)\w+|CLAUDE_\w+|GH_\w+|GITHUB_\w+|npm_config_\w+|NPM_CONFIG_\w+)=/;
 const dangerousEnvReason = (/** @type {string} */ a) =>
   `Blocked: setting ${a.split("=")[0]} changes what commands load or run, or which credentials they use.`;
 

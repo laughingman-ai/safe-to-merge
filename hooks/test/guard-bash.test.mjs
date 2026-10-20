@@ -645,6 +645,10 @@ describe("round three", () => {
       "BASH_ENV=/tmp/x.sh bash scripts/review.sh 2",
       "env NODE_OPTIONS=--require=./x.js node scripts/verify.mjs",
       "GH_TOKEN=x gh pr view 2",
+      "EDITOR='touch /tmp/pwned' git commit",
+      "VISUAL=/tmp/x.sh git rebase -i main",
+      "PAGER='sh -c id' git log",
+      "export EDITOR=/tmp/x.sh",
     ]) {
       blocks(repo, command);
     }
