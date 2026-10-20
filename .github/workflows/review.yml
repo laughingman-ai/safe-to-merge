@@ -58,4 +58,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: https://api.anthropic.com
-        run: bash trusted/scripts/ci-review.sh
+        run: |
+          if [ ! -f trusted/scripts/ci-review.sh ]; then
+            echo "::error::No reviewer on the base branch: scripts/ci-review.sh is missing."
+            exit 1
+          fi
+          bash trusted/scripts/ci-review.sh
