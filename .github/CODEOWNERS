@@ -4,3 +4,8 @@
 /.github/ @MJL40635
 /scripts/verify.mjs @MJL40635
 /scripts/check-test-lock.mjs @MJL40635
+/scripts/review.sh @MJL40635
+/scripts/review-prompt.md @MJL40635
+/scripts/review-schema.json @MJL40635
+/scripts/run-reviewer.sh @MJL40635
+/KNOWN_BUGS.md @MJL40635

@@ -25,5 +25,5 @@ directly.
 
 You'll be blocked if you try any of these, so don't: pushing to `main` or force pushing,
 merging a PR, editing tests after the reproduction is committed, editing the gates
-(`.claude/`, `hooks/`, `.github/`, `scripts/verify.mjs`, `scripts/check-test-lock.mjs`),
+(`.claude/`, `hooks/`, `.github/`, the verify, test-lock, and review scripts, `KNOWN_BUGS.md`),
 writing `.env` files or credentials, or finishing while `npm run verify` fails.

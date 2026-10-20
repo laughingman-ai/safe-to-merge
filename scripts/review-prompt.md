@@ -13,6 +13,11 @@ Report a finding as **important** only if it is one of these:
 - a change to the gates (.claude/, hooks/, .github/, scripts/verify.mjs,
   scripts/check-test-lock.mjs) that loosens a check
 
+`KNOWN_BUGS.md` lists bugs left in the code on purpose, so the demo always has something to
+fix. Don't report a listed bug, or its missing test, as a finding. Do report a change that
+adds a new bug, or that hides a listed one, for example by changing a test to expect the
+wrong answer.
+
 Everything else (naming, style, small simplifications) is **minor**. Style is handled by the
 formatter, so don't report formatting.
 

@@ -45,6 +45,19 @@ describe("gates", () => {
   });
 });
 
+describe("review gates", () => {
+  const repo = makeRepo({ branch: "fix/weekend" });
+
+  test("blocks edits to the reviewer and the known-bugs list", () => {
+    for (const file of ["scripts/review-prompt.md", "scripts/run-reviewer.sh", "KNOWN_BUGS.md"]) {
+      assert.match(
+        edit(repo, "Write", { file_path: file, content: "" }) ?? "",
+        /part of the gates/,
+      );
+    }
+  });
+});
+
 describe("secrets", () => {
   const repo = makeRepo();
 

@@ -57,7 +57,10 @@ export function isGatePath(/** @type {string | null} */ rel) {
     rel.startsWith("hooks/") ||
     rel.startsWith(".github/") ||
     rel === "scripts/verify.mjs" ||
-    rel === "scripts/check-test-lock.mjs"
+    rel === "scripts/check-test-lock.mjs" ||
+    rel.startsWith("scripts/review") ||
+    rel === "scripts/run-reviewer.sh" ||
+    rel === "KNOWN_BUGS.md"
   );
 }
 
@@ -148,5 +151,5 @@ export const LOCKED_TEST_REASON =
   "already committed. Change the code under src/ until that test passes. Do not change the test.";
 
 export const GATE_REASON =
-  "That file is part of the gates (.claude/, hooks/, .github/, scripts/verify.mjs, " +
-  "scripts/check-test-lock.mjs). Agents can't change the gates; a human changes them through review.";
+  "That file is part of the gates (.claude/, hooks/, .github/, the verify, test-lock, and " +
+  "review scripts, KNOWN_BUGS.md). Agents can't change the gates; a human changes them through review.";

@@ -134,10 +134,13 @@ function checkPush(/** @type {string[]} */ args, /** @type {string} */ root) {
   if (refspecs.some((r) => r.startsWith("+"))) {
     return "Blocked: a + refspec is a force push. Push new commits instead.";
   }
-  const targets = refspecs.map((r) => (r.includes(":") ? r.split(":").pop() : r) ?? "");
+  const branch = currentBranch(root);
+  const targets = refspecs
+    .map((r) => (r.includes(":") ? r.split(":").pop() : r) ?? "")
+    .map((t) => (t === "HEAD" || t === "@" ? branch : t));
   const pushesProtected =
     targets.some((t) => PROTECTED_BRANCHES.has(t.replace(/^refs\/heads\//, ""))) ||
-    (refspecs.length === 0 && PROTECTED_BRANCHES.has(currentBranch(root)));
+    (refspecs.length === 0 && PROTECTED_BRANCHES.has(branch));
   if (pushesProtected) {
     return (
       "Blocked: nothing goes to main except through a pull request. Push your branch and " +

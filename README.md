@@ -5,7 +5,8 @@ the alternative: the system decides when the work is done, and the agent can't t
 past it.
 
 The code is a tiny invoice library with a real bug in it: a due date can land on a
-Saturday ([issue #1](demo/issue.md)). The interesting part is everything around the code.
+Saturday ([issue #1](demo/issue.md)), kept on purpose and listed in
+[KNOWN_BUGS.md](KNOWN_BUGS.md). The interesting part is everything around the code.
 
 ## See it in 30 seconds
 
@@ -37,16 +38,16 @@ real agent, see [demo/LIVE.md](demo/LIVE.md).
 
 ## The gates
 
-| Gate                 | Where                                                                          | What it stops                                                                          |
-| -------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| Push guard           | `hooks/guard-bash.mjs` (PreToolUse, Bash)                                      | pushes to `main`, force pushes, `gh pr merge`                                          |
-| Test lock            | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `scripts/check-test-lock.mjs` | on a `fix/*` branch, changing tests after the failing reproduction is committed        |
-| Protected gates      | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `.github/CODEOWNERS`          | an agent editing the hooks, settings, CI, or verify script                             |
-| Secrets guard        | `hooks/guard-files.mjs`                                                        | `.env` files and credentials written into the repo                                     |
-| Format on edit       | `hooks/format.mjs` (PostToolUse)                                               | formatting noise in review and lint failures                                           |
-| Verify gate          | `hooks/verify-gate.mjs` (Stop)                                                 | ending a session while `npm run verify` fails                                          |
-| Fresh-context review | `scripts/review.sh`                                                            | the agent that wrote the code approving it                                             |
-| Rules on `main`      | GitHub rulesets                                                                | merging without green `verify`, a passing review on the exact head commit, and a human |
+| Gate                 | Where                                                                          | What it stops                                                                              |
+| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Push guard           | `hooks/guard-bash.mjs` (PreToolUse, Bash)                                      | pushes to `main`, force pushes, `gh pr merge`                                              |
+| Test lock            | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `scripts/check-test-lock.mjs` | on a `fix/*` branch, changing tests after the failing reproduction is committed            |
+| Protected gates      | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `.github/CODEOWNERS`          | an agent editing the hooks, settings, CI, the verify or review scripts, or `KNOWN_BUGS.md` |
+| Secrets guard        | `hooks/guard-files.mjs`                                                        | `.env` files and credentials written into the repo                                         |
+| Format on edit       | `hooks/format.mjs` (PostToolUse)                                               | formatting noise in review and lint failures                                               |
+| Verify gate          | `hooks/verify-gate.mjs` (Stop)                                                 | ending a session while `npm run verify` fails                                              |
+| Fresh-context review | `scripts/review.sh`                                                            | the agent that wrote the code approving it                                                 |
+| Rules on `main`      | GitHub rulesets                                                                | merging without green `verify`, a passing review on the exact head commit, and a human     |
 
 `npm run verify` is the single definition of done. CI runs it, and the Stop hook won't let a
 session end while it fails. Every hook has tests in `hooks/test/`, and `verify` runs them.

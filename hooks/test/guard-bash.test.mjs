@@ -45,6 +45,16 @@ describe("pushes", () => {
 
   test("blocks a bare push while on main", () => {
     assert.match(bash(onMain, "git push") ?? "", /pull request/);
+    assert.match(bash(onMain, "git push origin") ?? "", /pull request/);
+  });
+
+  test("blocks pushing HEAD while on main", () => {
+    assert.match(bash(onMain, "git push origin HEAD") ?? "", /pull request/);
+    assert.match(bash(onMain, "git push -u origin @") ?? "", /pull request/);
+  });
+
+  test("allows pushing HEAD from a feature branch", () => {
+    assert.equal(bash(repo, "git push -u origin HEAD"), null);
   });
 
   for (const command of [
