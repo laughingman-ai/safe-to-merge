@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf hooks",
+    "description": "Remove the hooks"
+  }
+}

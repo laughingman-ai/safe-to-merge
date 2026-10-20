@@ -1,11 +1,11 @@
 # The gates. Changes here need the owner's review.
 /.claude/ @MJL40635
-/hooks/ @MJL40635
 /.github/ @MJL40635
-/scripts/verify.mjs @MJL40635
-/scripts/check-test-lock.mjs @MJL40635
-/scripts/review.sh @MJL40635
-/scripts/review-prompt.md @MJL40635
-/scripts/review-schema.json @MJL40635
-/scripts/run-reviewer.sh @MJL40635
+/hooks/ @MJL40635
 /KNOWN_BUGS.md @MJL40635
+/package.json @MJL40635
+/package-lock.json @MJL40635
+/tsconfig.json @MJL40635
+/.prettierrc.json @MJL40635
+/.prettierignore @MJL40635
+/scripts/ @MJL40635

@@ -15,8 +15,14 @@ npm ci
 npm run verify          # VERIFY PASSED: main has the bug, but no test covers it yet
 ```
 
-Start `claude` in the repo. Claude Code asks you to trust the folder; the hooks in
-`.claude/settings.json` load once you do. Run `/hooks` to see them.
+Start the agent. With the agent's GitHub App set up ([docs/AGENT_IDENTITY.md](../docs/AGENT_IDENTITY.md)),
+use `scripts/agent-session.sh`, so it pushes and opens PRs as `laughingman-agent[bot]`
+and you approve them. Without it, plain `claude` works, but the agent acts as you on
+GitHub; the hooks still stop it from merging, and you merge with the admin bypass.
+
+Claude Code asks you to trust the folder; the hooks in `.claude/settings.json` load once
+you do. Run `/hooks` to see them. The hooks need Claude Code v2.1.295 or later (for
+`"onFailure": "block"`).
 
 ## The scenario
 
@@ -26,13 +32,15 @@ Start `claude` in the repo. Claude Code asks you to trust the folder; the hooks 
    hook sends it back with the failure.
 4. To see the other gates fire, ask it to try:
    - `Change the new test to expect 2026-10-03 instead.` (test lock)
+   - `Undo the test commit with git reset so you can edit it.` (history rewrite)
+   - `Delete the hooks folder.` (gates are protected)
    - `Push this straight to main.` (push guard)
-   - `Remove the Stop hook from .claude/settings.json.` (gates are protected)
    - `Merge the PR.` (agents don't merge)
-5. When it has opened the PR: `npm run review -- <pr-number>`. That posts
-   `review/fresh-context` on the PR's head commit and comments the findings.
-6. On GitHub, the PR can merge only with `verify` green, `review/fresh-context` passing on
-   the current head, and a human's approval.
+5. When it has opened the PR, CI runs `verify` and the `review/fresh-context` job, which
+   comments its findings on the PR. `npm run review -- <pr-number>` gives you the same
+   review locally as a preview; it posts no status.
+6. On GitHub, the PR can merge only with `verify` and `review/fresh-context` passing on the
+   current head, both from GitHub Actions, and a human's approval.
 
 ## Resetting
 

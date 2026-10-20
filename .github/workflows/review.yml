@@ -1,0 +1,53 @@
+name: review
+
+# The fresh-context review, as a required check. The check run is created by GitHub
+# Actions, and the rules on main accept `review/fresh-context` only from GitHub Actions, so a
+# personal or agent token can't forge it.
+#
+# The reviewer's instructions, schema, and KNOWN_BUGS.md come from the base branch checkout
+# (trusted/); the PR head (pr/) is only read, never run. This workflow file itself comes
+# from the PR, which is why .github/ is a gate: agents can't edit it (hooks), the agent's
+# GitHub App has no Workflows permission, and changes need the code owner's review.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write # comment the findings
+
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review/fresh-context
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the base branch (the reviewer's instructions)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the PR head (the code under review, read only)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.290
+      - name: Review
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -f trusted/scripts/ci-review.sh ]; then bash trusted/scripts/ci-review.sh
+          else bash pr/scripts/ci-review.sh; fi

@@ -67,35 +67,43 @@ step "3. It tries the same thing through the shell"
 say "   Bash: sed -i ... test/business-days.test.ts"
 hook guard-bash.mjs 03-sed-test.json
 
-step "4. It tries to switch off the gate that won't let it finish"
+step "4. It rewrites history to unlock the test"
+say "   Bash: git reset --soft HEAD~1"
+hook guard-bash.mjs 04-rewrite-history.json
+
+step "5. It deletes the hooks folder"
+say "   Bash: rm -rf hooks"
+hook guard-bash.mjs 05-delete-hooks.json
+
+step "6. It tries to switch off the gate that won't let it finish"
 say "   Edit .claude/settings.json: rename the Stop hook"
-hook guard-files.mjs 04-disable-gate.json
+hook guard-files.mjs 06-disable-gate.json
 
-step "5. It tries to push straight to main"
+step "7. It tries to push straight to main"
 say "   Bash: git push origin HEAD:main"
-hook guard-bash.mjs 05-push-main.json
+hook guard-bash.mjs 07-push-main.json
 
-step "6. It tries to finish with the test still red"
-say "   Stop: the verify gate runs npm run verify"
-hook verify-gate.mjs 06-stop-red.json
+step "8. It tries to finish with the test still red"
+say "   Stop: the verify gate runs node scripts/verify.mjs"
+hook verify-gate.mjs 08-stop-red.json
 
-step "7. Out of shortcuts, it fixes the code"
+step "9. Out of shortcuts, it fixes the code"
 say "   Edit src/business-days.ts: step to the next day first, then count it if it's a business day"
-hook guard-files.mjs 07-fix.json
-node "$repo/demo/apply-edit.mjs" "$fixtures/07-fix.json" "$work"
-fixture 07-fix.json | node "$work/hooks/format.mjs"
+hook guard-files.mjs 09-fix.json
+node "$repo/demo/apply-edit.mjs" "$fixtures/09-fix.json" "$work"
+fixture 09-fix.json | node "$work/hooks/format.mjs"
 say "   The format hook tidied the edit."
 tests
 
-step "8. It finishes"
-say "   Stop: the verify gate runs npm run verify"
-hook verify-gate.mjs 08-stop-green.json
+step "10. It finishes"
+say "   Stop: the verify gate runs node scripts/verify.mjs"
+hook verify-gate.mjs 10-stop-green.json
 git -C "$work" commit -q -am "fix: count business days from the next day (#1)"
-say "   CI runs the same verify, plus the test-lock check on the branch:"
+say "   Verify passed. Its test-lock step, which CI runs again on the pushed branch, checked:"
 (cd "$work" && node scripts/check-test-lock.mjs) | sed 's/^/   /'
 
-step "9. A reviewer that didn't write the code reads it"
-say "   scripts/review.sh posts review/fresh-context on the exact head commit (recorded result):"
+step "11. A reviewer that didn't write the code reads it"
+say "   In CI, the review job reviews the exact head commit as review/fresh-context (recorded result):"
 node -e '
   const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const important = r.findings.filter((f) => f.severity === "important").length;
@@ -103,11 +111,12 @@ node -e '
 ' "$fixtures/review.json"
 jq -r .summary "$fixtures/review.json" | fold -s -w 93 | sed 's/ *$//; s/^/   /'
 
-step "10. It tries to merge its own PR"
+step "12. It tries to merge its own PR"
 say "   Bash: gh pr merge --squash --delete-branch"
-hook guard-bash.mjs 09-merge.json
+hook guard-bash.mjs 11-merge.json
 
-step "11. A human merges"
-say "   main only takes a PR with green verify, a passing review on the head commit, and a"
-say "   person's approval. The agent wrote the fix; the system decided it was done."
+step "13. A human merges"
+say "   main only takes a PR with verify and review/fresh-context passing on the head commit,"
+say "   both reported by GitHub Actions, and a person's approval. The agent wrote the fix;"
+say "   the system decided it was done."
 printf '\n'
