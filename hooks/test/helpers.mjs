@@ -15,8 +15,14 @@ const GIT_ENV = {
   GIT_COMMITTER_EMAIL: "test@example.com",
 };
 
-/** Scratch repos made by this test file, removed when the process exits. */
+/** Scratch repos and files made by this test file, removed when the process exits. */
 const scratch = /** @type {string[]} */ ([]);
+
+/** Remove `p` (a file or directory) when the tests finish. Returns `p`. */
+export function scratchPath(/** @type {string} */ p) {
+  scratch.push(p);
+  return p;
+}
 process.on("exit", () => {
   for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
 });
