@@ -109,3 +109,13 @@ review job fails with a message pointing here, and nothing can merge.
    ```
 
 5. Re-run the **review** job on any open PR (or push a commit).
+
+## After PR #2 merges
+
+PR #2 introduced the reviewer, so `main` had none to review it with. `review.yml` has a
+one-time bootstrap step that runs PR #2's own reviewer files, only for PR #2, and only if
+they match pinned SHA-256 hashes. Remove it in the first commit after #2 merges: the branch
+`chore/remove-review-bootstrap` deletes the bootstrap step, the `if` on the Review step,
+and the "No reviewer on the base branch" step's PR-number exception. From then on every PR
+into `main` is reviewed with `main`'s reviewer, and PRs into any other branch get no review
+job and no key.

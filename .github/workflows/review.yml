@@ -4,13 +4,17 @@ name: review
 # Actions, and the rules on main accept `review/fresh-context` only from GitHub Actions, so a
 # personal or agent token can't forge it.
 #
-# The reviewer's instructions, schema, and KNOWN_BUGS.md come from the base branch checkout
-# (trusted/); the PR head (pr/) is only read, never run. This workflow file itself comes
-# from the PR, which is why .github/ is a gate: agents can't edit it (hooks), the agent's
-# GitHub App has no Workflows permission, and changes need the code owner's review.
+# Only PRs into main are reviewed: main always has the reviewer, so its instructions,
+# schema, and KNOWN_BUGS.md come from the base checkout (trusted/), and the PR head (pr/) is
+# only read, never run. A PR into another branch gets no review job and no API key.
+#
+# This workflow file itself comes from the PR, which is why .github/ is a gate: agents
+# can't edit it (hooks), the agent's GitHub App has no Workflows permission, and changes
+# need the code owner's review.
 
 on:
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -26,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check out the base branch (the reviewer's instructions)
+      - name: Check out the base branch (the reviewer)
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -43,11 +47,38 @@ jobs:
           node-version: 22
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@2.1.290
-      - name: Review
+      # BOOTSTRAP, PR #2 ONLY. Delete this step, and the `if` on the next one, in the first
+      # commit after PR #2 merges (see docs/AGENT_IDENTITY.md, "After PR #2 merges").
+      # main had no reviewer before #2, so #2 is reviewed with its own reviewer files, and
+      # only if they are byte-for-byte the files pinned here.
+      - name: Bootstrap review (PR #2 only, pinned files)
+        if: ${{ github.event.pull_request.number == 2 && hashFiles('trusted/scripts/run-reviewer.sh') == '' }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TRUSTED_DIR: ${{ github.workspace }}/pr
+          REVIEW_NOTE: "_Bootstrap review: main had no reviewer yet, so this PR's reviewer files ran, after matching the pinned hashes in review.yml._"
         run: |
-          if [ -f trusted/scripts/ci-review.sh ]; then bash trusted/scripts/ci-review.sh
-          else bash pr/scripts/ci-review.sh; fi
+          cd pr
+          sha256sum -c - <<'PINNED'
+          6adc9257090e9b06f04f8028919b8fe157b01f23dbe9e5ec01688be5cdf78130  scripts/ci-review.sh
+          1a3cb9eaa3e0fab35043da2983123c268e83a548977337d0f264d9254025bd8e  scripts/run-reviewer.sh
+          e8f9792bbce44b56f56264ddc9add4779107d8c3fc52ec18b24c8d51bb0ea909  scripts/review-prompt.md
+          da6b4a444a4b4539f0345f3e4aa6e66930269cc4bd33c0f15c9557688ec70c4d  scripts/review-schema.json
+          d376ccb5f52d3618c6351afc960460bdeee6d9f85c23ec80c200d2d666502535  KNOWN_BUGS.md
+          PINNED
+          cd ..
+          bash pr/scripts/ci-review.sh
+      - name: Review
+        if: ${{ hashFiles('trusted/scripts/run-reviewer.sh') != '' }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash trusted/scripts/ci-review.sh
+      - name: No reviewer on the base branch
+        if: ${{ github.event.pull_request.number != 2 && hashFiles('trusted/scripts/run-reviewer.sh') == '' }}
+        run: |
+          echo "::error::The base branch has no reviewer, so this PR can't be reviewed."
+          exit 1

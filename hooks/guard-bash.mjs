@@ -1,13 +1,25 @@
 #!/usr/bin/env node
 // @ts-check
-// PreToolUse (Bash|Monitor|PowerShell): no pushes to main, no force pushes, no merging,
-// approving, or posting statuses, no history rewrites on a locked branch, no credentials
-// in commands, and no shell writes to the gates, locked tests, or .env files.
+// PreToolUse (Bash|Monitor|PowerShell). Defense in depth: this catches the common shortcuts
+// an agent takes (pushing to main, merging, rewriting a locked branch, touching the gates,
+// leaking a token). It is not the boundary. The boundary is CI with checks bound to GitHub
+// Actions, the rules on main, CODEOWNERS, and the agent's separate GitHub App identity.
 //
-// Shell parsing here is deliberately simple: quotes, separators, redirects, `cd`, common
-// wrappers (bash -c, env, time, nohup, eval, ...) and git aliases. It catches the ordinary
-// ways an agent would do these things, not every possible one. CI (verify, check-test-lock,
-// the fresh-context review), the rules on main, and a human approval are the backstop.
+// Rather than recognize every dangerous command, it applies a conservative policy:
+//   1. Commands whose name comes from an expansion, interpreters fed from stdin (pipes,
+//      heredocs, here-strings, `<`, `-`, process substitution), and `source`/`.` are blocked.
+//   2. A command that can write (anything not on the short read-only list) is blocked if its
+//      arguments use shell expansion ($, backticks, ~, {a,b}), if a glob could reach a gate,
+//      or if it names a gate (or a locked test). Destructive commands also may not name a
+//      directory that contains a gate, or the repo root.
+//   3. `gh api` with any method but GET, any fields, --input, or graphql; `gh alias`; and gh
+//      commands it doesn't recognize (aliases, extensions) are blocked outright.
+// On top of that: no pushes to main or force pushes, no history rewrites on a locked fix/*
+// branch, no credentials in commands, and nothing that prints the session's tokens.
+//
+// What it can't see: a script file the agent writes and then runs, or values computed at
+// run time and passed through variables or pipes into a command it allows. That's accepted
+// risk, covered by the layers above.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -33,93 +45,195 @@ const PROTECTED_BRANCHES = new Set(["main", "master"]);
 const MAX_DEPTH = 4;
 
 /**
- * Split a command line into simple commands. Each command is a list of words plus any
- * redirect targets. Quotes are honored; `$(...)`, backticks, and parentheses split commands
- * so their contents are checked too. Heredoc bodies are not parsed (they are still scanned
- * for credentials).
- * @param {string} line
- * @returns {{ words: string[], redirects: string[] }[]}
+ * @typedef {{ text: string, expand: boolean, glob: boolean }} Word
+ *   expand: the word uses $, a backtick, ~, brace expansion, or a substitution outside
+ *   single quotes, so its final value isn't known until the shell runs.
+ * @typedef {{ words: Word[], redirects: Word[], stdin: "" | "pipe" | "heredoc" | "herestring" | "file" }} Command
  */
-export function parse(line) {
-  /** @type {{ words: string[], redirects: string[] }[]} */
-  const commands = [];
-  let words = /** @type {string[]} */ ([]);
-  let redirects = /** @type {string[]} */ ([]);
-  let word = "";
-  let inWord = false;
-  let quote = "";
-  let redirectNext = false;
 
+/** Remove heredoc bodies, so their text isn't read as commands. */
+function stripHeredocs(/** @type {string} */ line) {
+  const lines = line.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    out.push(lines[i]);
+    const delimiters = [
+      ...lines[i].matchAll(/(?<!<)<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g),
+    ];
+    for (const [, dash, , delimiter] of delimiters) {
+      while (i + 1 < lines.length) {
+        i++;
+        const body = dash ? lines[i].replace(/^\t+/, "") : lines[i];
+        if (body === delimiter) break;
+      }
+    }
+  }
+  return out.join("\n");
+}
+
+/** Index of the `)` that closes the `(` before `start`, honoring quotes and nesting. */
+function closing(/** @type {string} */ s, /** @type {number} */ start) {
+  let depth = 1;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (c === "\\") i++;
+    else if (c === "'") i = s.indexOf("'", i + 1) < 0 ? s.length : s.indexOf("'", i + 1);
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i;
+  }
+  return s.length;
+}
+
+/**
+ * Split a command line into simple commands. Quotes are honored. Substitutions ($(…),
+ * backticks, <(…), >(…)) mark the word that contains them as expanding, and their contents
+ * are parsed and returned as commands of their own.
+ * @param {string} input
+ * @returns {Command[]}
+ */
+export function parse(input) {
+  const line = stripHeredocs(input);
+  /** @type {Command[]} */
+  const commands = [];
+  /** @type {Command[]} */
+  const nested = [];
+  /** @type {Word[]} */
+  let words = [];
+  /** @type {Word[]} */
+  let redirects = [];
+  /** @type {Command["stdin"]} */
+  let stdin = "";
+  /** @type {Word | null} */
+  let word = null;
+  /** @type {"" | "out" | "in" | "heredoc" | "herestring"} */
+  let pending = "";
+  let quote = "";
+  let raw = ""; // the word's unquoted characters, for brace and tilde detection
+
+  const cur = () => (word ??= { text: "", expand: false, glob: false });
   const endWord = () => {
-    if (!inWord) return;
-    if (redirectNext) redirects.push(word);
-    else if (word !== "{" && word !== "}") words.push(word);
-    word = "";
-    inWord = false;
-    redirectNext = false;
+    if (!word) return;
+    if (/[{].*[,.].*[}]/.test(raw) || /(^|[=:])~/.test(raw)) word.expand = true;
+    if (pending === "out") redirects.push(word);
+    else if (pending === "in") stdin ||= "file";
+    else if (pending === "heredoc") stdin = "heredoc";
+    else if (pending === "herestring") stdin = "herestring";
+    else if (word.text !== "{" && word.text !== "}") words.push(word);
+    word = null;
+    raw = "";
+    pending = "";
   };
-  const endCommand = () => {
+  const endCommand = (/** @type {boolean} */ pipeNext = false) => {
     endWord();
-    if (words.length || redirects.length) commands.push({ words, redirects });
+    if (words.length || redirects.length) commands.push({ words, redirects, stdin });
     words = [];
     redirects = [];
+    stdin = pipeNext ? "pipe" : "";
+  };
+  const substitute = (/** @type {number} */ from, /** @type {string} */ marker) => {
+    const end = closing(line, from);
+    nested.push(...parse(line.slice(from, end)));
+    const w = cur();
+    w.text += marker;
+    w.expand = true;
+    return end;
   };
 
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (quote) {
-      if (c === quote) quote = "";
-      else if (c === "\\" && quote === '"' && i + 1 < line.length) word += line[++i];
-      else if (quote === '"' && c === "$" && line[i + 1] === "(") {
-        // command substitution inside double quotes: check it as its own command
-        endCommand();
-        quote = "";
-        i++;
-      } else word += c;
+    if (quote === "'") {
+      if (c === "'") quote = "";
+      else cur().text += c;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = "";
+      else if (c === "\\" && i + 1 < line.length) cur().text += line[++i];
+      else if (c === "$" && line[i + 1] === "(") i = substitute(i + 2, "$(…)");
+      else if (c === "`") {
+        const end = line.indexOf("`", i + 1) < 0 ? line.length : line.indexOf("`", i + 1);
+        nested.push(...parse(line.slice(i + 1, end)));
+        Object.assign(cur(), { expand: true }).text += "`…`";
+        i = end;
+      } else {
+        if (c === "$") cur().expand = true;
+        cur().text += c;
+      }
       continue;
     }
     if (c === "'" || c === '"') {
       quote = c;
-      inWord = true;
+      cur();
     } else if (c === "\\" && i + 1 < line.length) {
-      word += line[++i];
-      inWord = true;
+      cur().text += line[++i];
     } else if (c === " " || c === "\t") {
       endWord();
     } else if (c === "$" && line[i + 1] === "(") {
+      i = substitute(i + 2, "$(…)");
+    } else if ((c === "<" || c === ">") && line[i + 1] === "(") {
+      i = substitute(i + 2, `${c}(…)`);
+    } else if (c === "`") {
+      const end = line.indexOf("`", i + 1) < 0 ? line.length : line.indexOf("`", i + 1);
+      nested.push(...parse(line.slice(i + 1, end)));
+      Object.assign(cur(), { expand: true }).text += "`…`";
+      i = end;
+    } else if (c === "|" && line[i + 1] !== "|") {
+      if (line[i + 1] === "&") i++;
+      endCommand(true);
+    } else if (c === "|" || c === ";" || c === "\n" || c === "(" || c === ")") {
+      if (c === "|") i++;
       endCommand();
-      i++;
-    } else if ("\n;|&()`".includes(c)) {
-      // `2>&1` and `&>` are redirects, not command separators.
-      if (c === "&" && (line[i - 1] === ">" || line[i + 1] === ">")) continue;
+    } else if (c === "&") {
+      if (line[i + 1] === ">") continue; // &> is a redirect
+      if (line[i + 1] === "&") i++;
       endCommand();
     } else if (c === ">") {
-      const fd = inWord && /^\d$/.test(word) ? word : "";
-      if (fd) {
-        word = "";
-        inWord = false;
-      } else {
-        endWord();
-      }
-      if (line[i + 1] === ">") i++;
+      const fd = /** @type {Word | null} */ (word);
+      if (fd && /^\d$/.test(fd.text) && !fd.expand) {
+        word = null; // a file descriptor number, e.g. 2>
+        raw = "";
+      } else endWord();
+      if (line[i + 1] === ">" || line[i + 1] === "|") i++;
       if (line[i + 1] === "&") {
-        i++; // `>&2` duplicates a descriptor; no file is written
-        while (/\d/.test(line[i + 1] ?? "")) i++;
+        i++; // >&2 duplicates a descriptor; no file is written
+        while (/[\d-]/.test(line[i + 1] ?? "")) i++;
         continue;
       }
-      redirectNext = true;
+      pending = "out";
+    } else if (c === "<") {
+      endWord();
+      if (line[i + 1] === "<" && line[i + 2] === "<") {
+        i += 2;
+        pending = "herestring";
+      } else if (line[i + 1] === "<") {
+        i++;
+        if (line[i + 1] === "-") i++;
+        pending = "heredoc";
+      } else pending = "in";
     } else {
-      word += c;
-      inWord = true;
+      const w = cur();
+      if (c === "$") w.expand = true;
+      if (c === "*" || c === "?" || c === "[") w.glob = true;
+      w.text += c;
+      raw += c;
     }
   }
   endCommand();
-  return commands;
+  return [...commands, ...nested];
 }
 
 const base = (/** @type {string | undefined} */ w) => (w ?? "").split(/[\\/]/).pop() ?? "";
+const texts = (/** @type {Word[]} */ ws) => ws.map((w) => w.text);
+const isAssignment = (/** @type {Word} */ w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w.text);
 
-const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell"]);
+const INTERPRETERS = new Set(
+  (
+    "sh bash zsh dash ksh mksh fish csh tcsh busybox node nodejs python python2 python3 " +
+    "perl ruby php lua deno bun pwsh powershell tclsh osascript"
+  ).split(" "),
+);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "pwsh", "powershell"]);
+
 /** Wrappers that run the rest of the line as a command, with how many option values they take. */
 const WRAPPERS = /** @type {Record<string, Record<string, number>>} */ ({
   time: { "-f": 1, "-o": 1 },
@@ -132,47 +246,86 @@ const WRAPPERS = /** @type {Record<string, Record<string, number>>} */ ({
   sudo: { "-u": 1, "-g": 1, "-h": 1, "-C": 1, "-D": 1 },
   doas: { "-u": 1 },
   stdbuf: { "-i": 1, "-o": 1, "-e": 1 },
-  xargs: { "-I": 1, "-n": 1, "-P": 1, "-d": 1, "-L": 1, "-s": 1, "-a": 1, "-E": 1 },
   env: { "-u": 1, "-C": 1, "--unset": 1, "--chdir": 1 },
   timeout: { "-s": 1, "-k": 1, "--signal": 1, "--kill-after": 1 },
-  watch: { "-n": 1, "-d": 0 },
+  watch: { "-n": 1 },
 });
 
 /**
- * Peel wrappers off a command. Returns the inner command words, or a script string when
- * the wrapper runs a string (bash -c, eval, env -S).
- * @param {string[]} words
- * @returns {{ words: string[] } | { script: string }}
+ * Peel wrappers off a command. Returns the inner words, a script string when the wrapper
+ * runs one (bash -c, eval, env -S), or a reason to block.
+ * @returns {{ words: Word[] } | { script: string } | { block: string }}
  */
-function unwrap(words) {
+function unwrap(/** @type {Word[]} */ words) {
   let w = words;
   for (let guard = 0; guard < 16; guard++) {
-    while (w.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(w[0])) w = w.slice(1);
-    const name = base(w[0]);
-    if (name === "eval") return { script: w.slice(1).join(" ") };
+    while (w.length && isAssignment(w[0])) w = w.slice(1);
+    const name = base(w[0]?.text);
+    if (name === "eval") {
+      if (w.slice(1).some((x) => x.expand))
+        return { block: "Blocked: eval of an expansion can't be checked." };
+      return { script: texts(w.slice(1)).join(" ") };
+    }
     if (SHELLS.has(name)) {
-      const i = w.findIndex((a, j) => j > 0 && (/^-[a-zA-Z]*c$/.test(a) || a === "-Command"));
-      if (i > 0 && w[i + 1] !== undefined) return { script: w[i + 1] };
+      const i = w.findIndex(
+        (a, j) => j > 0 && (/^-[a-zA-Z]*c$/.test(a.text) || a.text === "-Command"),
+      );
+      if (i > 0 && w[i + 1]) {
+        if (w[i + 1].expand)
+          return { block: "Blocked: a shell running an expanded string can't be checked." };
+        return { script: w[i + 1].text };
+      }
       return { words: w };
     }
     const options = WRAPPERS[name];
     if (!options) return { words: w };
     let i = 1;
     while (i < w.length) {
-      const a = w[i];
+      const a = w[i].text;
       if (name === "env" && (a === "-S" || a === "--split-string")) {
-        return { script: w.slice(i + 1).join(" ") };
+        return { script: texts(w.slice(i + 1)).join(" ") };
       }
-      if (name === "env" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(a)) i++;
+      if (name === "env" && isAssignment(w[i])) i++;
       else if (a in options) i += 1 + options[a];
       else if (a.startsWith("-") && a !== "-") i++;
       else break;
     }
     if (name === "timeout" || name === "watch") i++; // the duration / interval
+    if (i >= w.length) return { words: w.slice(0, 1) }; // e.g. bare `env`: prints the environment
     w = w.slice(i);
   }
   return { words: w };
 }
+
+/** Read-only commands: they can't write without a redirect, so their arguments aren't checked. */
+const READ_ONLY = new Set(
+  "cat ls grep egrep fgrep rg head tail wc diff echo printf pwd true false test [ which type sleep".split(
+    " ",
+  ),
+);
+const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "blame", "rev-parse", "ls-files"]);
+/** Commands that destroy or overwrite: these may not even name a directory that holds a gate. */
+const DESTRUCTIVE = new Set(
+  (
+    "rm rmdir unlink mv cp ln install rsync scp find chmod chown chgrp sed perl awk gawk dd " +
+    "truncate shred tee touch mkdir tar unzip patch"
+  ).split(" "),
+);
+const GIT_DESTRUCTIVE = new Set([
+  "rm",
+  "mv",
+  "clean",
+  "checkout",
+  "restore",
+  "reset",
+  "apply",
+  "am",
+  "stash",
+]);
+
+/** Environment variables that hold this session's credentials. */
+const TOKEN_VARS =
+  /\b(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|ANTHROPIC_API_KEY|AGENT_APP_PRIVATE_KEY|OP_SESSION\w*)\b/;
 
 /** Git global options that take a value. */
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
@@ -180,9 +333,9 @@ const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--na
 const GIT_BUILTINS = new Set(
   (
     "add am apply bisect blame branch checkout cherry-pick clean clone commit config describe " +
-    "diff fetch filter-branch format-patch gc grep init log merge mv notes pull push rebase " +
-    "reflog remote replace reset restore revert rm show stash status submodule switch tag " +
-    "update-ref worktree"
+    "diff fetch filter-branch format-patch gc grep init log ls-files merge mv notes pull push " +
+    "rebase reflog remote replace reset restore rev-parse revert rm show stash status " +
+    "submodule switch tag update-ref worktree"
   ).split(" "),
 );
 
@@ -268,6 +421,14 @@ function checkHistory(/** @type {string[]} */ args, /** @type {string} */ dir) {
   return null;
 }
 
+const GH_COMMANDS = new Set(
+  (
+    "pr issue repo run workflow api auth browse search status release label cache gist project " +
+    "ruleset secret variable extension config org help codespace attestation gpg-key ssh-key " +
+    "completion alias"
+  ).split(" "),
+);
+
 /** Why a `gh` command is not allowed, or null. */
 function checkGh(/** @type {string[]} */ words) {
   /** @type {string[]} */
@@ -278,7 +439,21 @@ function checkGh(/** @type {string[]} */ words) {
     else if (!a.startsWith("--repo=")) args.push(a);
   }
   const [sub, action] = args;
-  const text = words.join(" ");
+  if (sub === undefined || sub.startsWith("-")) return null;
+  if (!GH_COMMANDS.has(sub)) {
+    return `Blocked: gh ${sub} isn't a gh command this guard knows, so it may be an alias or an extension.`;
+  }
+  if (sub === "alias")
+    return "Blocked: agents don't define or use gh aliases; they hide what a command does.";
+  if (sub === "extension" && !["list", "search", "browse"].includes(action ?? "")) {
+    return "Blocked: gh extensions run code this guard can't see.";
+  }
+  if (
+    sub === "auth" &&
+    (action !== "status" || args.some((a) => a === "-t" || a === "--show-token"))
+  ) {
+    return "Blocked: gh auth commands can print or change the session's credentials.";
+  }
   if (sub === "pr" && action === "merge") {
     return (
       "Blocked: agents don't merge. A human merges after the checks and the fresh-context " +
@@ -289,104 +464,47 @@ function checkGh(/** @type {string[]} */ words) {
     return "Blocked: agents don't approve pull requests. Approval is the human's step.";
   }
   if (sub === "api") {
-    if (
-      /\/pulls\/\d+\/(merge|reviews)\b|\/merges\b|\/statuses\/|\/check-(runs|suites)|\/rulesets|\/protection|\/actions\/secrets|\/environments/.test(
-        text,
-      ) ||
-      /mergePullRequest|enablePullRequestAutoMerge|createCommitStatus|(create|update)CheckRun|(add|submit)PullRequestReview|RepositoryRuleset|BranchProtectionRule/.test(
-        text,
-      )
-    ) {
-      return (
-        "Blocked: merging, approving, posting statuses or checks, and changing rules or " +
-        "secrets go through people and CI, not agent API calls."
-      );
+    const method = args.flatMap((a, i) =>
+      a === "-X" || a === "--method"
+        ? [args[i + 1] ?? ""]
+        : a.startsWith("--method=")
+          ? [a.slice(9)]
+          : a.startsWith("-X") && a.length > 2
+            ? [a.slice(2)]
+            : [],
+    );
+    const sendsData = args.some((a) => /^(-f|-F|--field|--raw-field|--input)(=|$)|^-[fF]./.test(a));
+    if (args.includes("graphql")) return "Blocked: agents don't call the GitHub GraphQL API.";
+    if (sendsData || method.some((m) => m.toUpperCase() !== "GET")) {
+      return "Blocked: agents only read through gh api (GET with no fields). Writes go through gh commands the guard checks, or through people.";
     }
   }
   if (
     (sub === "secret" && action !== "list") ||
+    (sub === "variable" && action !== "list") ||
     (sub === "ruleset" && !["list", "view", "check"].includes(action ?? "")) ||
-    (sub === "repo" && ["edit", "delete", "rename", "archive"].includes(action ?? "")) ||
-    (sub === "workflow" && action === "disable")
+    (sub === "repo" &&
+      ["edit", "delete", "rename", "archive", "unarchive"].includes(action ?? "")) ||
+    (sub === "workflow" && (action === "disable" || action === "enable"))
   ) {
     return `Blocked: gh ${sub} ${action} changes repo settings, which is the owner's job.`;
   }
   return null;
 }
 
-/** Files a command writes, removes, renames, links, or restores from another ref. */
-function writtenPaths(/** @type {string[]} */ words, /** @type {string[]} */ redirects) {
-  const paths = [...redirects];
-  const [cmd, ...rest] = words;
-  const operands = rest.filter((a) => !a.startsWith("-"));
-  const name = base(cmd);
-  const optionValue = (/** @type {string[]} */ names) =>
-    rest.flatMap((a, i) => {
-      for (const n of names) {
-        if (a === n && rest[i + 1]) return [rest[i + 1]];
-        if (a.startsWith(`${n}=`)) return [a.slice(n.length + 1)];
-      }
-      return [];
-    });
-
-  if (["tee", "rm", "rmdir", "unlink", "truncate", "touch", "shred", "mkdir"].includes(name)) {
-    paths.push(...operands);
-  } else if (["chmod", "chown", "chgrp"].includes(name)) {
-    paths.push(...operands.slice(1));
-  } else if (name === "mv" || name === "ln") {
-    paths.push(...operands); // ln: both the link and what it points at
-  } else if (["cp", "install", "rsync", "scp"].includes(name)) {
-    paths.push(...operands.slice(-1), ...optionValue(["-t", "--target-directory"]));
-  } else if (name === "dd") {
-    paths.push(...rest.filter((a) => a.startsWith("of=")).map((a) => a.slice(3)));
-  } else if (
-    (name === "sed" || name === "perl") &&
-    rest.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith("--in-place"))
-  ) {
-    paths.push(...operands);
-  } else if (name === "git") {
-    const { args } = gitParts(words, ".");
-    const [sub, ...gitRest] = args;
-    const gitOperands = gitRest.filter((a) => !a.startsWith("-"));
-    if (sub === "rm" || sub === "mv" || sub === "clean") {
-      paths.push(...(gitOperands.length || sub !== "clean" ? gitOperands : ["."]));
-    } else if (sub === "checkout" || sub === "restore") {
-      // Restoring from the index or HEAD is harmless. Pulling files from another ref is a write.
-      const source = optionValue(["-s", "--source"]);
-      const dashdash = gitRest.indexOf("--");
-      const plain = gitRest.filter(
-        (a, i) => !a.startsWith("-") && !["-s", "--source"].includes(gitRest[i - 1] ?? ""),
-      );
-      let ref = source[0] ?? "";
-      let files = plain;
-      if (dashdash >= 0) {
-        const before = gitRest.slice(0, dashdash).filter((a) => !a.startsWith("-"));
-        files = gitRest.slice(dashdash + 1);
-        ref ||= before.filter((a) => !source.includes(a))[0] ?? "";
-      } else if (!ref && plain.length > 1) {
-        [ref, ...files] = plain;
-      }
-      if (ref && ref !== "HEAD") paths.push(...files);
-    }
-  } else if (
-    name === "npm" &&
-    [
-      "pkg",
-      "set-script",
-      "install",
-      "i",
-      "add",
-      "uninstall",
-      "remove",
-      "rm",
-      "update",
-      "up",
-    ].includes(rest[0] ?? "")
-  ) {
-    if (rest[0] === "pkg" || rest[0] === "set-script" || operands.length > 1)
-      paths.push("package.json");
+/** Option values that are free text (commit messages, PR titles and bodies), not paths. */
+function messageValues(/** @type {string[]} */ words) {
+  const name = base(words[0]);
+  const free = new Set();
+  for (let i = 1; i < words.length; i++) {
+    const a = words[i];
+    const takesText =
+      (name === "git" && (/^-[a-zA-Z]*m$/.test(a) || a === "--message")) ||
+      (name === "gh" &&
+        ["-t", "--title", "-b", "--body", "-m", "--message", "--subject"].includes(a));
+    if (takesText) free.add(i + 1);
   }
-  return paths;
+  return free;
 }
 
 /** Interpreters that run inline code, with the flags that introduce it. */
@@ -400,7 +518,7 @@ const INLINE = /** @type {Record<string, string[]>} */ ({
   deno: ["eval"],
 });
 const GATE_MENTION =
-  /\.claude|\.github|\bhooks\b|node_modules|KNOWN_BUGS|package(-lock)?\.json|tsconfig|\.prettier|scripts\/(verify|check-test-lock|review|ci-review|run-reviewer|agent-)/;
+  /\.claude|\.github|\bhooks\b|node_modules|KNOWN_BUGS|package(-lock)?\.json|tsconfig|\.prettier|scripts\//i;
 const TEST_MENTION = /\btest\/|\.test\./;
 const ENV_MENTION = /\.env(rc|\.|\b)(?!\.example|\.sample)/;
 
@@ -415,6 +533,25 @@ function checkInline(/** @type {string[]} */ words, /** @type {() => boolean} */
   if (ENV_MENTION.test(code)) return "Blocked: inline code that touches a .env file.";
   if (TEST_MENTION.test(code) && locked())
     return `Blocked: inline code that touches tests. ${LOCKED_TEST_REASON}`;
+  return null;
+}
+
+/** Commands that read the environment or credential stores. */
+function checkLeak(/** @type {string[]} */ words, /** @type {string} */ line) {
+  const name = base(words[0]);
+  if (TOKEN_VARS.test(line))
+    return "Blocked: this command uses the session's credentials directly.";
+  if (
+    name === "printenv" ||
+    (name === "env" && words.length === 1) ||
+    (["set", "export", "declare", "typeset"].includes(name) &&
+      (words.length === 1 ||
+        (name !== "set" && words.length === 2 && /^-[px]+$/.test(words[1])))) ||
+    /\/proc\/[^/\s]+\/environ|\.git-credentials|\.config\/gh|hosts\.yml/.test(line) ||
+    (name === "git" && words.includes("credential"))
+  ) {
+    return "Blocked: this command could print the session's environment or credentials into the transcript.";
+  }
   return null;
 }
 
@@ -438,25 +575,53 @@ export function check(line, root, cwd = root, depth = 0) {
   ) {
     return "Blocked: call GitHub through gh, not curl or wget, so the guard can see what the call does.";
   }
+  const lockedRoot = () => testLock(root).locked;
 
   let here = cwd;
   for (const command of parse(line)) {
     const inner = unwrap(command.words);
+    if ("block" in inner) return inner.block;
     if ("script" in inner) {
       const reason = check(inner.script, root, here, depth + 1);
       if (reason) return reason;
       continue;
     }
-    let words = inner.words;
+    const ws = inner.words;
+    if (ws.length === 0) {
+      // only assignments (X=1); a redirect alone (> file) still writes
+      if (command.redirects.length === 0) continue;
+    }
+    if (ws[0]?.expand)
+      return "Blocked: the command name comes from an expansion, so it can't be checked.";
+    let words = texts(ws);
     const name = base(words[0]);
 
-    if ((name === "cd" || name === "pushd") && command.redirects.length === 0) {
+    const leak = checkLeak(words, line);
+    if (leak) return leak;
+
+    // 1. Interpreters fed from stdin, and sourcing files.
+    if (name === "source" || name === ".") {
+      return "Blocked: source runs a file in this shell, and the guard can't see what it does.";
+    }
+    if (
+      INTERPRETERS.has(name) &&
+      (command.stdin !== "" ||
+        words.slice(1).some((a) => a === "-" || a === "/dev/stdin" || a === "-s") ||
+        ws.slice(1).some((a) => /^[<>]\(…\)/.test(a.text)))
+    ) {
+      return `Blocked: ${name} reading a program from a pipe, heredoc, or stream can't be checked. Run a file, or run the commands directly.`;
+    }
+
+    if (name === "cd" || name === "pushd") {
+      if (ws.slice(1).some((w) => w.expand))
+        return "Blocked: cd to an expansion can't be followed.";
       const target = words[1];
       here = target && target !== "-" ? path.resolve(here, target) : process.env.HOME || here;
       continue;
     }
 
     let dir = here;
+    let gitSub = "";
     if (name === "git") {
       const parts = gitParts(words, here);
       dir = parts.dir;
@@ -484,10 +649,11 @@ export function check(line, root, cwd = root, depth = 0) {
           if (reason) return reason;
           continue;
         }
-        if (alias) args = [...(parse(alias)[0]?.words ?? []), ...args.slice(1)];
+        if (alias) args = [...texts(parse(alias)[0]?.words ?? []), ...args.slice(1)];
       }
       words = ["git", ...args];
-      if (args[0] === "push") {
+      gitSub = args[0] ?? "";
+      if (gitSub === "push") {
         const reason = checkPush(args, dir);
         if (reason) return reason;
       }
@@ -499,39 +665,126 @@ export function check(line, root, cwd = root, depth = 0) {
       const reason = checkGh(words);
       if (reason) return reason;
     }
+    if (name === "xargs") {
+      const rest = words.slice(1).filter((a) => !a.startsWith("-"));
+      if (!READ_ONLY.has(base(rest[0]))) {
+        return "Blocked: xargs runs a command on paths from its input, which the guard can't see.";
+      }
+    }
+    if (name === "find" && words.some((a) => /^-(exec|execdir|ok|okdir)$/.test(a))) {
+      return "Blocked: find -exec runs commands the guard can't see. List the files, then act on them by name.";
+    }
 
-    const lockedHere = () => testLock(root).locked;
-    const inline = checkInline(words, lockedHere);
+    if (
+      name === "npm" &&
+      words[1] !== undefined &&
+      ![
+        "ci",
+        "test",
+        "t",
+        "run",
+        "run-script",
+        "exec",
+        "x",
+        "ls",
+        "list",
+        "view",
+        "outdated",
+        "help",
+        "--version",
+        "-v",
+      ].includes(words[1])
+    ) {
+      return `Blocked: npm ${words[1]} can change package.json or package-lock.json, which are gates. Use npm ci.`;
+    }
+    if (name === "git" && gitSub === "clean" && !words.slice(2).some((a) => !a.startsWith("-"))) {
+      return `Blocked: git clean with no path reaches the whole repo. ${GATE_REASON}`;
+    }
+
+    const inline = checkInline(words, lockedRoot);
     if (inline) return inline;
 
-    for (const target of writtenPaths(words, command.redirects)) {
-      for (const rel of repoPaths(root, dir, target)) {
-        if (touchesGate(rel)) return `Blocked: ${rel || "the repo root"}. ${GATE_REASON}`;
-        if (isEnvFile(rel)) return `Blocked: ${rel}. Secrets don't go in .env files in this repo.`;
-        if (touchesTests(rel) && lockedHere()) {
-          return `Blocked: ${rel || "the repo root"}. ${LOCKED_TEST_REASON}`;
-        }
+    // Redirects write, whatever the command.
+    for (const r of command.redirects) {
+      if (r.expand)
+        return "Blocked: a redirect to an expanded path can't be checked. Write to a literal path.";
+      const reason = pathReason(root, dir, r.text, true);
+      if (reason) return reason;
+    }
+
+    // 2. Commands that can write.
+    const readOnly =
+      READ_ONLY.has(name) || (name === "git" && GIT_READ_ONLY.has(gitSub)) || words.length === 0;
+    if (readOnly) continue;
+
+    const free = messageValues(words);
+    const runsGateScript =
+      ["node", "bash", "sh"].includes(name) &&
+      words[1] !== undefined &&
+      !words[1].startsWith("-") &&
+      repoPaths(root, dir, words[1]).some((rel) => touchesGate(rel, false));
+    const testRunner = name === "node" && words.includes("--test");
+    const destructive = DESTRUCTIVE.has(name) || (name === "git" && GIT_DESTRUCTIVE.has(gitSub));
+
+    for (let i = 1; i < ws.length; i++) {
+      const w = ws[i];
+      if (free.has(i)) continue; // free text: may use $(…) and quotes freely
+      if (w.expand) {
+        return (
+          `Blocked: ${name} can write, and "${w.text}" uses shell expansion ($, backticks, ~, ` +
+          "{a,b}), so the guard can't tell what it touches. Use literal paths and single quotes."
+        );
+      }
+      if (testRunner || (runsGateScript && i === 1)) continue;
+      // A word is a path, or carries one after "=" (--output=x, of=x).
+      const eq = w.text.indexOf("=");
+      const values = w.text.startsWith("-") ? [] : [w.text];
+      if (eq > 0) values.push(w.text.slice(eq + 1));
+      for (const value of values.filter(Boolean)) {
+        const reason = pathReason(root, dir, value, destructive);
+        if (reason) return reason;
       }
     }
   }
   return null;
 }
 
+/** Why writing `target` is not allowed, or null. */
+function pathReason(
+  /** @type {string} */ root,
+  /** @type {string} */ dir,
+  /** @type {string} */ target,
+  /** @type {boolean} */ ancestors,
+) {
+  for (const rel of repoPaths(root, dir, target)) {
+    if (touchesGate(rel, ancestors)) return `Blocked: ${rel || "the repo root"}. ${GATE_REASON}`;
+    if (isEnvFile(rel)) return `Blocked: ${rel}. Secrets don't go in .env files in this repo.`;
+    if (touchesTests(rel, ancestors) && testLock(root).locked) {
+      return `Blocked: ${rel || "the repo root"}. ${LOCKED_TEST_REASON}`;
+    }
+  }
+  return null;
+}
+
 /**
- * PowerShell syntax differs from POSIX shells, so it gets the conservative treatment: the
- * git and gh checks above, plus a block on any command that names a protected path at all.
+ * PowerShell syntax differs from POSIX shells, so it gets the coarse treatment: the checks
+ * above, plus a block on any command that names a protected path, runs a string
+ * (Invoke-Expression, -EncodedCommand), or reads a credential variable.
  */
 export function checkPowerShell(
   /** @type {string} */ line,
   /** @type {string} */ root,
   /** @type {string} */ cwd = root,
 ) {
-  const reason = check(line, root, cwd);
+  if (/\b(Invoke-Expression|iex)\b|-EncodedCommand|-enc\b|\$env:/i.test(line)) {
+    return "Blocked: this PowerShell command runs a string or reads the environment, which the guard can't check.";
+  }
+  const reason = check(line.replace(/\$\w+/g, "x"), root, cwd);
   if (reason) return reason;
   for (const { words } of parse(line)) {
     for (const w of words.slice(1)) {
-      if (w.startsWith("-")) continue;
-      for (const rel of repoPaths(root, cwd, w)) {
+      if (w.text.startsWith("-")) continue;
+      for (const rel of repoPaths(root, cwd, w.text)) {
         if (rel !== "" && touchesGate(rel)) return `Blocked: ${rel}. ${GATE_REASON}`;
         if (isEnvFile(rel)) return `Blocked: ${rel}. Secrets don't go in .env files in this repo.`;
         if (rel !== "" && touchesTests(rel) && testLock(root).locked) {

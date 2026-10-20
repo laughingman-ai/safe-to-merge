@@ -16,8 +16,8 @@ npm run replay
 ```
 
 The replay is one agent session, recorded as tool calls and fed to the same hooks Claude
-Code runs. The agent reproduces the bug, then tries eight shortcuts and gets stopped each
-time:
+Code runs. The agent reproduces the bug, then tries eight shortcuts, and the hooks stop
+each one:
 
 ```
 4. It rewrites history to unlock the test
@@ -43,76 +43,96 @@ time:
 Only then does it fix the code. The output is identical on every run. To try it with a
 real agent, see [demo/LIVE.md](demo/LIVE.md).
 
-## The gates
+## Where the boundary is
 
-| Gate                 | Where                                                                          | What it stops                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Push guard           | `hooks/guard-bash.mjs` (PreToolUse: Bash, Monitor, PowerShell)                 | pushes to `main`, force pushes, merging, approving, posting statuses or checks, changing repo settings               |
-| Test lock            | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `scripts/check-test-lock.mjs` | on a `fix/*` branch: changing tests after the failing reproduction is committed, or rewriting history to unlock them |
-| Protected gates      | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`, `.github/CODEOWNERS`          | an agent editing, deleting, moving, or symlinking the hooks, settings, CI, config, scripts, or `KNOWN_BUGS.md`       |
-| Secrets guard        | `hooks/guard-files.mjs`, `hooks/guard-bash.mjs`                                | `.env`/`.envrc` files, and credentials in files or commands                                                          |
-| Format on edit       | `hooks/format.mjs` (PostToolUse)                                               | formatting noise in review and lint failures                                                                         |
-| Verify gate          | `hooks/verify-gate.mjs` (Stop)                                                 | ending a session while `node scripts/verify.mjs` fails                                                               |
-| Fresh-context review | `.github/workflows/review.yml`, `scripts/run-reviewer.sh`                      | the agent that wrote the code approving it                                                                           |
-| Rules on `main`      | GitHub rulesets                                                                | merging without `verify` and `review/fresh-context` from GitHub Actions on the exact head commit, and a human        |
+There are two layers, and they do different jobs.
 
-`node scripts/verify.mjs` is the single definition of done. CI runs it directly (not through
-an npm script), and the Stop hook won't let a session end while it fails. Every hook has
-tests in `hooks/test/`, and `verify` runs them.
+**The boundary** is what an agent can't get past even if it tries everything:
 
-The PreToolUse hooks fail closed: an internal error blocks the action, and
-`"onFailure": "block"` in `.claude/settings.json` blocks it if the hook can't run at all.
-That needs Claude Code v2.1.295 or later.
+| Layer                             | What it does                                                                                                                                                                                                                                              |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CI checks bound to GitHub Actions | `verify` and `review/fresh-context` run in Actions, and the rules on `main` accept them only from GitHub Actions (app 15368). A personal or agent token can't post them.                                                                                  |
+| The fresh-context review          | `.github/workflows/review.yml` runs a new Claude Code process with read-only tools on the PR head. Its instructions, schema, and `KNOWN_BUGS.md` come from `main`, and the diff is passed as delimited, untrusted data. It runs only for PRs into `main`. |
+| The rules on `main`               | GitHub rulesets: no direct pushes, force pushes, or deletion; both checks green on an up-to-date head; one approval plus code-owner review.                                                                                                               |
+| CODEOWNERS                        | Changes to the gates (`.claude/`, `.github/`, `hooks/`, `scripts/`, config, `KNOWN_BUGS.md`) need the owner's review.                                                                                                                                     |
+| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)): no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner.                                                          |
+
+**Defense in depth** is the hooks in `.claude/settings.json`. They catch the common
+shortcuts early, inside the session, and tell the agent why, so it fixes the code instead
+of fighting the gates:
+
+| Hook                                                            | Catches                                                                                                                                                                                  |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hooks/guard-bash.mjs` (PreToolUse: Bash, Monitor, PowerShell)  | pushing to `main` or force pushing; merging, approving, and gh API writes; rewriting history on a branch with locked tests; touching the gates; printing tokens; credentials in commands |
+| `hooks/guard-files.mjs` (PreToolUse: Edit, Write, NotebookEdit) | edits to the gates or locked tests, through symlinks too; `.env` files; credentials in files                                                                                             |
+| `hooks/format.mjs` (PostToolUse)                                | formatting noise                                                                                                                                                                         |
+| `hooks/verify-gate.mjs` (Stop)                                  | ending a session while `node scripts/verify.mjs` fails                                                                                                                                   |
+
+The shell guard doesn't try to recognize every dangerous command. It follows a
+conservative policy. It blocks:
+
+- piping or redirecting into a shell or interpreter, and `source`
+- shell expansion (`$`, backticks, `~`, `{a,b}`) in any command that can write, except in
+  commit messages and PR text
+- naming a gate in any command that can write
+- `gh api` with any method but GET, `gh api graphql`, and `gh alias`
+
+Read-only commands (`cat`, `ls`, `grep`, `rg`, `git diff`, `git log`, and a few more) run
+freely. Every hook is tested in `hooks/test/`, and `verify` runs those tests. The
+PreToolUse hooks fail closed: an internal error blocks the action, and
+`"onFailure": "block"` blocks it if the hook can't run at all (Claude Code v2.1.295+).
+
+`node scripts/verify.mjs` is the single definition of done. CI runs it directly, not
+through an npm script, and the Stop hook runs it too.
 
 ## Who can merge
 
-- The required checks, `verify` and `review/fresh-context`, are accepted only from GitHub
-  Actions. A personal or agent token can't post them.
-- The reviewer's instructions, schema, and `KNOWN_BUGS.md` come from the base branch, so a
-  PR can't change how it's reviewed. The diff goes to the reviewer as delimited, untrusted
-  data.
-- **Today the agent and the owner are the same GitHub user, so the owner merges every PR
-  with the admin bypass on the "main: human approval" rule.** That bypass is reachable from
-  an agent session too; the hooks are what stop the agent from using it. The checks rule
-  has no bypass for anyone.
-- The fix is a separate identity for the agent: a GitHub App with no admin role, so it can't
-  bypass anything, and its PRs can be approved by the owner. Setup is in
-  [docs/AGENT_IDENTITY.md](docs/AGENT_IDENTITY.md), and `scripts/agent-session.sh` starts a
-  session as the App once it exists.
+**Today the agent and the owner are the same GitHub user, so the owner merges every PR
+with the admin bypass on the "main: human approval" rule.** An agent session holding the
+owner's token could reach that bypass too. The hooks catch the common ways it might try,
+but the fix is the agent's own identity: once the GitHub App is set up, the agent works as
+`laughingman-agent[bot]` through `scripts/agent-session.sh`, its PRs need the owner's
+approval, and the bypass can be removed. The checks rule has no bypass for anyone.
 
 ## Why it's built this way
 
 - **A rule in a prompt is a suggestion. A rule in a hook is a fact.** `CLAUDE.md` tells the
-  agent what to do; the hooks make the important parts non-negotiable.
+  agent what to do. The hooks enforce the important parts in the session, and CI and the
+  rules on `main` enforce them where the agent can't reach.
 - **Tests come first and then stay put.** A bug fix starts with a test that fails. Once it's
   committed, the only way to green is to change the code. CI checks that the reproduction
-  really fails at its own commit.
+  really fails at its own commit and that no test changed after it.
 - **The author never approves its own work.** The reviewer is a new process with no memory
-  of the session, its instructions come from the base branch, and its verdict is bound to
-  one commit. A new push needs a new review.
-- **Every layer has a backstop.** The hooks catch the ordinary attempts. CI catches anything
-  done outside Claude Code. The rules on `main` and a human catch the rest.
+  of the session, its instructions come from `main`, and its verdict is bound to one
+  commit. A new push needs a new review.
+- **Every layer has a backstop.** The hooks catch the common attempts early. CI catches
+  anything done outside Claude Code. The rules on `main`, CODEOWNERS, and a human catch
+  the rest.
 
 ## Limits, stated plainly
 
-- The shell guard parses commands simply: quotes, separators, redirects, `cd`, common
-  wrappers like `bash -c`, `env`, `time`, and `eval`, and git aliases. It catches the normal
-  ways to push, merge, or write a file, not every possible one (a script file that does the
-  writing, for example). PowerShell gets a coarser check: any command that names a protected
-  path is blocked. CI and the rules on `main` are the backstop.
+- **The shell guard is a filter, not a sandbox.** It can't see what a script file the agent
+  writes and then runs will do. It also can't see values computed at run time and passed
+  through variables, files, or pipes into a command it allows. That's accepted risk:
+  anything that reaches the repo still has to pass CI, the review, and the rules on `main`.
+- PowerShell gets a coarser check than POSIX shells. Any command that names a protected
+  path, runs a string, or reads `$env:` is blocked.
 - The test lock reads local git history, so locally it's only as strong as that history.
-  The hooks block the usual rewrites (reset, rebase, amend, filter-branch, recreating the
-  branch); CI re-checks the pushed branch.
+  The hooks catch the common rewrites, and CI re-checks the pushed branch.
 - The Stop hook re-runs verify on every stop attempt, even when `stop_hook_active` is true.
   Claude Code overrides a Stop block after eight consecutive continuations with no tool
-  call in between, and each tool call resets the count. So an agent that keeps working keeps
-  going, and one that only tries to stop is eventually let out with verify still red. CI
-  runs the same verify, so that work can't merge.
+  call in between, and each tool call resets the count. So an agent that keeps working
+  keeps going, and one that only tries to stop is eventually let out with verify still
+  red. CI runs the same verify, so that work can't merge.
 - A PR's workflow files come from the PR, so a PR could change what CI runs. That's why
-  `.github/` is a gate: the hooks block agents from editing it, the agent's GitHub App has
-  no Workflows permission, and CODEOWNERS requires the owner's review.
+  `.github/` is a gate: the hooks catch agents editing it, the agent's App has no Workflows
+  permission, and CODEOWNERS requires the owner's review.
+- The secrets guard matches known credential formats, including ones split across quotes.
+  It can't see a credential assembled from variables at run time.
+- `scripts/agent-session.sh` hides the owner's credentials from `gh` and `git`, but the
+  session runs as the same OS user. For hard isolation, use a container or a separate OS
+  user.
 - The reviewer is a model. It's a second opinion with a structured verdict, not a proof.
-  The human approval is the last gate.
 - The replay's review verdict is recorded (`demo/fixtures/review.json`) from a real run of
   the reviewer on the replay's diff (`demo/record-review.sh`). Everything else in the replay
   runs live.

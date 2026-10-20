@@ -23,9 +23,10 @@ directly.
 5. Stop. CI's verify and fresh-context review, and a human, decide whether it merges.
    Never merge, approve, or post statuses.
 
-## Rules the hooks enforce
+## Rules
 
-You'll be blocked if you try any of these, so don't:
+The hooks block the common forms of these, and CI and the rules on `main` catch the rest.
+Don't try them:
 
 - pushing to `main`, force pushing, or deleting branches
 - merging or approving a PR, posting commit statuses or checks, or changing repo settings
@@ -34,3 +35,6 @@ You'll be blocked if you try any of these, so don't:
   the other config files, `scripts/`, `KNOWN_BUGS.md`
 - writing `.env` or `.envrc` files, or putting a credential in a file or a command
 - finishing while `node scripts/verify.mjs` fails
+- piping into a shell or interpreter, `source`, or using `$`, backticks, `~`, or `{a,b}` in a
+  command that writes files (use literal paths and single quotes)
+- printing the environment or tokens (`printenv`, `env`, `gh auth token`)

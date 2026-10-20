@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# The review job in CI (.github/workflows/review.yml). Runs from the base branch's checkout
-# (trusted/), reviews the PR head (pr/), comments the findings, and exits non-zero on a
-# failing verdict, which fails the required `review/fresh-context` check.
+# The review job in CI (.github/workflows/review.yml). Reviews the PR head (pr/) using the
+# reviewer from the trusted checkout (TRUSTED_DIR, the base branch), comments the findings,
+# and exits non-zero on a failing verdict, which fails the required `review/fresh-context`
+# check.
 #
-# Env: PR_NUMBER, GITHUB_REPOSITORY, GH_TOKEN (comments), ANTHROPIC_API_KEY (the reviewer).
+# Env: PR_NUMBER, GITHUB_REPOSITORY, GH_TOKEN (comments), ANTHROPIC_API_KEY (the reviewer),
+#      TRUSTED_DIR (default: $GITHUB_WORKSPACE/trusted), REVIEW_NOTE (optional comment footer).
 set -euo pipefail
 
 : "${PR_NUMBER:?}" "${GITHUB_REPOSITORY:?}"
+workspace="${GITHUB_WORKSPACE:-$PWD}"
+trusted="${TRUSTED_DIR:-$workspace/trusted}"
 if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "::error::The ANTHROPIC_API_KEY repository secret isn't set, so the review can't run. The owner adds it: see docs/AGENT_IDENTITY.md, 'CI reviewer key'."
   exit 1
 fi
-
-workspace="${GITHUB_WORKSPACE:-$PWD}"
-trusted="$workspace/trusted"
-note=""
 if [ ! -f "$trusted/scripts/run-reviewer.sh" ]; then
-  # Only possible for the PR that introduces the reviewer: the base branch has none yet.
-  trusted="$workspace/pr"
-  note="_Bootstrap run: the base branch has no reviewer yet, so the reviewer files came from this PR._"
+  echo "::error::The base branch has no reviewer (scripts/run-reviewer.sh), so this PR can't be reviewed."
+  exit 1
 fi
 
 diff="$(mktemp)"
@@ -32,7 +31,7 @@ sha="$(git -C "$workspace/pr" rev-parse HEAD)"
   jq -r '.summary' <<<"$review"
   printf '\n'
   jq -r '.findings[] | "- **\(.severity)** `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.issue)"' <<<"$review"
-  [ -n "$note" ] && printf '\n%s\n' "$note"
+  if [ -n "${REVIEW_NOTE:-}" ]; then printf '\n%s\n' "$REVIEW_NOTE"; fi
 } >"$diff.comment"
 gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$diff.comment" >/dev/null
 cat "$diff.comment"

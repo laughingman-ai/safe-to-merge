@@ -126,22 +126,29 @@ export const GATE_FILES = [
 ];
 const GATE_ROOTS = [...GATE_DIRS, ...GATE_FILES];
 
-/** Whether `rel` is a gate, inside one, or contains one (a parent directory, or the root). */
-export function touchesGate(/** @type {string | null} */ rel) {
+/**
+ * Whether `rel` is a gate or inside one. With `ancestors`, also when `rel` contains a gate
+ * (a parent directory, or the repo root ""). Case-insensitive, since macOS and Windows
+ * file systems are.
+ */
+export function touchesGate(/** @type {string | null} */ rel, ancestors = true) {
   if (rel === null) return false;
-  if (hasGlob(rel)) return globTouches(rel, GATE_ROOTS);
-  return GATE_ROOTS.some((g) => rel === g || rel.startsWith(`${g}/`) || within(g, rel));
+  const r = rel.toLowerCase();
+  const roots = GATE_ROOTS.map((g) => g.toLowerCase());
+  if (hasGlob(r)) return globTouches(r, roots);
+  return roots.some((g) => r === g || r.startsWith(`${g}/`) || (ancestors && within(g, r)));
 }
 
-/** Whether `rel` is a test file, the test directory, or contains it. */
-export function touchesTests(/** @type {string | null} */ rel) {
+/** Whether `rel` is a test file or the test directory; with `ancestors`, or contains it. */
+export function touchesTests(/** @type {string | null} */ rel, ancestors = true) {
   if (rel === null) return false;
-  if (hasGlob(rel)) return /\.test\./.test(rel) || globTouches(rel, ["test"]);
+  const r = rel.toLowerCase();
+  if (hasGlob(r)) return /\.test\./.test(r) || globTouches(r, ["test"]);
   return (
-    rel === "test" ||
-    rel.startsWith("test/") ||
-    /\.test\.[cm]?[jt]s$/.test(rel) ||
-    within("test", rel)
+    r === "test" ||
+    r.startsWith("test/") ||
+    /\.test\.[cm]?[jt]s$/.test(r) ||
+    (ancestors && within("test", r))
   );
 }
 
@@ -170,7 +177,7 @@ function globTouches(/** @type {string} */ pattern, /** @type {string[]} */ root
 
 export function isEnvFile(/** @type {string | null} */ rel) {
   if (!rel) return false;
-  const base = rel.split("/").pop() ?? "";
+  const base = (rel.split("/").pop() ?? "").toLowerCase();
   if (base === ".env.example" || base === ".env.sample") return false;
   return base === ".env" || base === ".envrc" || base.startsWith(".env.");
 }
@@ -188,9 +195,14 @@ const SECRET_PATTERNS = [
   { name: "a private key", re: /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/ },
 ];
 
-/** The kind of secret found in `text`, or null. */
+/**
+ * The kind of secret found in `text`, or null. Also checks the text with quotes and
+ * backslashes removed, so `'ghp_''abc…'` is caught. A secret assembled from variables at
+ * run time is not; the shell guard blocks expansions in commands that write.
+ */
 export function findSecret(/** @type {string} */ text) {
-  for (const { name, re } of SECRET_PATTERNS) if (re.test(text)) return name;
+  const flat = text.replace(/['"\\]|\\\n/g, "");
+  for (const { name, re } of SECRET_PATTERNS) if (re.test(text) || re.test(flat)) return name;
   return null;
 }
 

@@ -43,6 +43,12 @@ describe("gates", () => {
     test(`blocks writing ${file}`, () => assert.match(write(repo, file) ?? "", /one of the gates/));
   }
 
+  test("compares gate paths case-insensitively", () => {
+    assert.match(write(repo, ".Claude/settings.json") ?? "", /one of the gates/);
+    assert.match(write(repo, "HOOKS/guard-bash.mjs") ?? "", /one of the gates/);
+    assert.match(write(repo, "Package.json") ?? "", /one of the gates/);
+  });
+
   test("resolves relative paths against the session's cwd", () => {
     const hooks = path.join(repo, "hooks");
     assert.match(
