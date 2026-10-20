@@ -1,5 +1,5 @@
 {
   "verdict": "pass",
-  "summary": "Fixes addBusinessDays so it advances one day first and then counts the new day only if it is a business day. Before, it checked the day it was leaving, so results could land on a weekend. The change adds regression tests for Thu+2 and Fri+1.",
+  "summary": "Fixes the known bug in `addBusinessDays` (#1). It now advances one day and then counts that day only if it's a business day, so results never land on a weekend or holiday. It adds a regression test with Thu+2 and Fri+1.",
   "findings": []
 }
