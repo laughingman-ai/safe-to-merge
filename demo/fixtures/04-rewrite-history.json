@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git reset --soft HEAD~1",
+    "description": "Uncommit the test so it can be edited"
+  }
+}

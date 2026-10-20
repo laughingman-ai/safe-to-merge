@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail"],
+      "description": "fail if there is at least one important finding"
+    },
+    "summary": { "type": "string", "description": "One or two sentences on what the change does" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string", "enum": ["important", "minor"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "issue": { "type": "string" }
+        },
+        "required": ["severity", "file", "issue"]
+      }
+    }
+  },
+  "required": ["verdict", "summary", "findings"]
+}

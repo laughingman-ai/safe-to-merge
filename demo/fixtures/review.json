@@ -1,0 +1,12 @@
+{
+  "verdict": "pass",
+  "summary": "Rewrites the addBusinessDays loop to step forward one day first and then check whether the day it landed on is a business day. This fixes the listed bug #1. The PR also adds a regression test for weekend landings.",
+  "findings": [
+    {
+      "severity": "minor",
+      "file": "test/business-days.test.ts",
+      "line": 30,
+      "issue": "The new test covers only weekend landings. It has no case where the landing day is a holiday, or where a start date on a weekend or holiday is followed by more business days. The existing holiday test only partly covers this. A case such as a Friday holiday with +1 would pin down the other half of #1."
+    }
+  ]
+}

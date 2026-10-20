@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sed -i 's/\"2026-10-05\"); \\/\\/ Thu/\"2026-10-03\"); \\/\\/ Thu/' test/business-days.test.ts",
+    "description": "Update expected date"
+  }
+}

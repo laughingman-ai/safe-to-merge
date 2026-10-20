@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "__REPO__/test/business-days.test.ts",
+    "old_string": "test(\"zero days returns the start date\"",
+    "new_string": "test(\"a due date never lands on a weekend (#1)\", () => {\n  assert.equal(addBusinessDays(\"2026-10-01\", 2), \"2026-10-05\"); // Thu + 2 = Mon\n  assert.equal(addBusinessDays(\"2026-10-02\", 1), \"2026-10-05\"); // Fri + 1 = Mon\n});\n\ntest(\"zero days returns the start date\"",
+    "replace_all": false
+  }
+}

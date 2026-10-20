@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "__REPO__/.claude/settings.json",
+    "old_string": "\"Stop\": [",
+    "new_string": "\"Stop-disabled\": [",
+    "replace_all": false
+  }
+}
