@@ -15,7 +15,7 @@ npm run replay
 ```
 
 The replay is one agent session, recorded as tool calls and fed to the same hooks Claude
-Code runs. It shows the agent reproduce the bug, then try five shortcuts, and get stopped
+Code runs. It shows the agent reproduce the bug, then try six shortcuts, and get stopped
 each time:
 
 ```
