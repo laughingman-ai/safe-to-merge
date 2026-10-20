@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "__REPO__/src/business-days.ts",
+    "old_string": "    if (!isBusinessDay(formatISODate(current), holidays)) {\n      current = addDays(current, 1);\n      continue;\n    }\n    current = addDays(current, 1);\n    counted += 1;",
+    "new_string": "    current = addDays(current, 1);\n    if (isBusinessDay(formatISODate(current),holidays)) counted += 1;",
+    "replace_all": false
+  }
+}

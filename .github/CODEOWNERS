@@ -1,0 +1,6 @@
+# The gates. Changes here need the owner's review.
+/.claude/ @MJL40635
+/hooks/ @MJL40635
+/.github/ @MJL40635
+/scripts/verify.mjs @MJL40635
+/scripts/check-test-lock.mjs @MJL40635

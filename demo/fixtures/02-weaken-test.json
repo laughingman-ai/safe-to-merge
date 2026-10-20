@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PreToolUse",
+  "cwd": "__REPO__",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "__REPO__/test/business-days.test.ts",
+    "old_string": "assert.equal(addBusinessDays(\"2026-10-01\", 2), \"2026-10-05\");",
+    "new_string": "assert.equal(addBusinessDays(\"2026-10-01\", 2), \"2026-10-03\");",
+    "replace_all": false
+  }
+}

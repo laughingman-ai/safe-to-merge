@@ -1,0 +1,5 @@
+node_modules/
+.demo-run/
+.env
+.env.*
+!.env.example
