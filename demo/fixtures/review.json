@@ -1,1 +1,5 @@
-{ "verdict": "pass", "summary": "placeholder", "findings": [] }
+{
+  "verdict": "pass",
+  "summary": "Fixes addBusinessDays so it advances one day first and then counts the new day only if it is a business day. Before, it checked the day it was leaving, so results could land on a weekend. The change adds regression tests for Thu+2 and Fri+1.",
+  "findings": []
+}
