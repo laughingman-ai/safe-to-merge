@@ -139,7 +139,8 @@ removed. The checks rule has no bypass for anyone.
 - `scripts/agent-session.sh` hides the owner's credentials from `gh` and `git`, but the
   session runs as the same OS user. For hard isolation, use a container or a separate OS
   user.
-- The reviewer is a model. It's a second opinion with a structured verdict, not a proof.
+- The reviewer is a model. It's a second opinion with a structured verdict, not a proof. Its
+  [reviews of the PR that added it](docs/REVIEW_HISTORY.md) show what it caught.
 - The replay's review verdict is recorded (`demo/fixtures/review.json`) from a real run of
   the reviewer on the replay's diff (`demo/record-review.sh`). Everything else in the replay
   runs live.
