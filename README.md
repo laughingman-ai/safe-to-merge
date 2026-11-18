@@ -15,6 +15,8 @@ npm ci
 npm run replay
 ```
 
+![A terminal running npm run replay: an agent reproduces the weekend due-date bug, eight shortcuts are blocked, then it fixes the code and the review passes.](demo/replay.svg)
+
 The replay is one agent session, recorded as tool calls and fed to the same hooks Claude
 Code runs. The agent reproduces the bug, then tries eight shortcuts, and the hooks stop
 each one:
@@ -150,6 +152,7 @@ removed. The checks rule has no bypass for anyone.
 | `npm run replay`           | the recorded agent session against the real gates             |
 | `npm run review -- <pr>`   | a local preview of the fresh-context review (posts no status) |
 | `scripts/agent-session.sh` | a Claude Code session as the agent's GitHub App               |
+| `demo/record-replay.sh`    | re-record `demo/replay.svg` after the replay's output changes |
 
 Requires Node 22.18 or later and Claude Code v2.1.295 or later. The review needs `gh`,
 `jq`, and a signed-in `claude`; in CI it needs the `ANTHROPIC_API_KEY` secret
