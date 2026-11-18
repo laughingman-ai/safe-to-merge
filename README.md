@@ -15,11 +15,11 @@ npm ci
 npm run replay
 ```
 
-![A terminal running npm run replay: an agent reproduces the weekend due-date bug, eight shortcuts are blocked, then it fixes the code and the review passes.](demo/replay.svg)
+![A terminal running npm run replay: an agent reproduces the weekend due-date bug, seven shortcuts are blocked, it fixes the code, the review passes, and its attempt to merge its own PR is blocked.](demo/replay.svg)
 
 The replay is one agent session, recorded as tool calls and fed to the same hooks Claude
 Code runs. The agent reproduces the bug, then tries eight shortcuts, and the hooks stop
-each one:
+each one. Seven come before the fix:
 
 ```
 4. It rewrites history to unlock the test
@@ -42,7 +42,8 @@ each one:
             VERIFY FAILED at test
 ```
 
-Only then does it fix the code. The output is identical on every run. To try it with a
+Only then does it fix the code. The eighth comes after the review: it tries to merge its own PR.
+The output is identical on every run. To try it with a
 real agent, see [demo/LIVE.md](demo/LIVE.md).
 
 ## Where the boundary is
