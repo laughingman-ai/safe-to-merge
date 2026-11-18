@@ -34,4 +34,16 @@ EOF
 
 npx -y svg-term-cli@2.1.1 --in "$tmp/replay.cast" --out "$repo/demo/replay.svg" \
   --window --no-cursor --padding 18 2>/dev/null
+
+# With reduced motion, show a still of the end of the session instead of the animation.
+node - "$repo/demo/replay.svg" <<'EOF'
+const fs = require("node:fs");
+const file = process.argv[2];
+const svg = fs.readFileSync(file, "utf8");
+const end = svg.match(/animation-duration:([\d.]+)s/);
+if (!end) throw new Error("no animation-duration in the SVG");
+const still = Math.max(0, Number(end[1]) - 3).toFixed(1); // inside the 6-second final hold
+const style = `<style>@media (prefers-reduced-motion: reduce){*{animation-play-state:paused!important;animation-delay:-${still}s!important}}</style>`;
+fs.writeFileSync(file, svg.replace(/(<svg\b[^>]*>)/, `$1${style}`));
+EOF
 echo "Wrote demo/replay.svg"
