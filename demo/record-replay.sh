@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Record `npm run replay` as the animated terminal in demo/replay.svg (shown in the README).
 # Needs uv (for asciinema 2.4.0) and npx (for svg-term-cli 2.1.1); neither is a project
-# dependency. Re-run after anything that changes the replay's output.
+# dependency. Re-run after anything that changes the replay's output. Linux only: it uses
+# util-linux `script`, whose flags differ on macOS.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
