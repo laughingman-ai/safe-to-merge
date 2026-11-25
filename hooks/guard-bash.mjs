@@ -16,17 +16,19 @@
 //      blocked, since the guard no longer knows where they land).
 //   3. `gh api` with any method but GET, any fields, --input, or graphql; `gh alias`; and gh
 //      commands it doesn't recognize (aliases, extensions) are blocked outright.
-//   4. Inline code (node -e, python -c, perl -e, awk and sed programs, ...) may compute and
-//      print, but not run programs, write files, or load code by a computed name. npx and
-//      npm exec run only tools installed from package-lock.json.
-// On top of that it catches: pushes to main, force pushes, and pattern refspecs; re-running
-// or dispatching CI; history rewrites on a locked fix/* branch; git commands that
-// would bring gate changes in from a patch or another ref (apply, checkout, switch, reset,
-// restore, merge, cherry-pick, stash pop); git config changes and `git -c` beyond
-// user.*/color.*; environment variables that change what runs (NODE_OPTIONS, PATH, LD_*,
-// GIT_*, ...); `trap`; output-file flags pointing at a gate; extracting archives or
-// patches inside the repo; credentials in commands; and anything that prints the session's
-// tokens.
+//   4. Inline code (node -e, python -c, perl -e, awk and sed programs, ...) may compute,
+//      read, and print. The common forms of running programs, writing files, or loading
+//      code by a computed name are blocked. npx and npm exec run only tools installed in
+//      the repo's node_modules; runners that always download (pnpm and yarn dlx, pnpx,
+//      bunx, uvx, pipx run, remote deno modules) are blocked.
+// On top of that it catches: pushes to main, force pushes, and pattern refspecs;
+// re-running, reopening, or dispatching CI, and empty commits; history rewrites on a
+// locked fix/* branch; git commands that would bring gate changes in from a patch or
+// another ref (apply, checkout, switch, reset, restore, merge, cherry-pick, stash pop);
+// git config changes and `git -c` beyond user.*/color.*; environment variables that change
+// what runs (NODE_OPTIONS, PATH, LD_*, GIT_*, ...); `trap`; output-file flags pointing at
+// a gate; extracting archives or patches inside the repo; credentials in commands; and
+// anything that prints the session's tokens.
 //
 // What it can't see: a script file the agent writes and then runs, inline code that hides
 // what it calls (a name built at run time), or values computed at run time and passed
@@ -703,6 +705,12 @@ function checkGh(/** @type {string[]} */ words) {
       "review pass. Stop here and report that the PR is ready."
     );
   }
+  if (sub === "pr" && action === "reopen") {
+    return (
+      "Blocked: reopening a PR re-runs its checks, which could re-roll the review until it " +
+      "passes. Push a commit that fixes what failed."
+    );
+  }
   if (sub === "pr" && action === "review" && args.some((a) => a === "--approve" || a === "-a")) {
     return "Blocked: agents don't approve pull requests. Approval is the human's step.";
   }
@@ -738,36 +746,89 @@ function checkGh(/** @type {string[]} */ words) {
   ) {
     return (
       `Blocked: gh ${sub} ${action} re-runs, stops, or dispatches CI, which could re-roll a ` +
-      "check until it passes. Push a new commit to run the checks again."
+      "check until it passes. Push a commit that fixes what failed."
     );
   }
   return null;
 }
 
+/** npm options that take a value. */
+const NPM_VALUE_OPTIONS = new Set([
+  "--loglevel",
+  "--workspace",
+  "-w",
+  "--prefix",
+  "-C",
+  "--registry",
+  "--userconfig",
+  "--cache",
+  "--node-options",
+  "--package",
+  "-p",
+  "--call",
+  "-c",
+]);
+/** npm options that change where a package comes from or what runs. */
+const NPM_RISKY_OPTION =
+  /^(-y|--yes|-p|--package|-c|--call|--prefix|-C|--workspaces?|-w|--registry|--userconfig|--node-options)(=|$)/;
+
 /**
- * npx, npm exec, and their pnpm, yarn, and bun cousins download and run any package. Only a
- * tool already installed from package-lock.json (in node_modules/.bin) may run this way.
+ * npx and npm exec download and run any package that isn't installed. They may run only a
+ * tool already installed in this repo's node_modules/.bin (from package-lock.json), from
+ * inside the repo. Runners that always download (pnpm dlx, yarn dlx, pnpx, bunx, uvx, pipx
+ * run, deno with a remote module) are blocked.
  * @returns {string | null}
  */
-function packageRunner(/** @type {string[]} */ words, /** @type {string} */ root) {
+function packageRunner(
+  /** @type {string[]} */ words,
+  /** @type {string} */ root,
+  /** @type {string} */ dir,
+) {
   const name = base(words[0]);
+  const sub = words.slice(1).find((a) => !a.startsWith("-"));
+  const downloads =
+    ["pnpx", "bunx", "uvx"].includes(name) ||
+    (["pnpm", "yarn"].includes(name) && sub === "dlx") ||
+    (name === "bun" && sub === "x") ||
+    (name === "pipx" && sub === "run") ||
+    (name === "deno" && words.some((a) => /^(https?|npm|jsr):/.test(a)));
+  if (downloads) {
+    return `Blocked: ${name} ${sub ?? ""} downloads and runs code that isn't installed from package-lock.json. Use an installed tool, or ask a human to add one.`.replace(
+      "  ",
+      " ",
+    );
+  }
   let rest;
-  if (name === "npx" || name === "bunx") rest = words.slice(1);
-  else if (name === "npm" && ["exec", "x"].includes(words[1] ?? "")) rest = words.slice(2);
-  else if (name === "bun" && words[1] === "x") rest = words.slice(2);
-  else if (["pnpm", "yarn"].includes(name) && words[1] === "dlx") {
-    return `Blocked: ${name} dlx downloads and runs a package. Use a tool from package-lock.json.`;
-  } else return null;
-  if (name === "bunx" || name === "bun") {
-    return `Blocked: ${name} x can download and run a package. Use npx with a tool from package-lock.json.`;
+  if (name === "npx") rest = words.slice(1);
+  else if (name === "npm" && ["exec", "x"].includes(sub ?? ""))
+    rest = words.slice(words.indexOf(sub ?? "") + 1);
+  else return null;
+  const risky = rest.find((a) => NPM_RISKY_OPTION.test(a));
+  if (risky) {
+    return `Blocked: npx ${risky.split("=")[0]} runs code that isn't installed from package-lock.json, or from somewhere else.`;
   }
-  if (rest.some((a) => /^(-y|--yes|-p|--package(=.*)?|-c|--call(=.*)?)$/.test(a))) {
-    return "Blocked: npx --yes, --package, and --call run code that isn't installed from package-lock.json.";
+  let bin;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--") {
+      bin = rest[i + 1];
+      break;
+    }
+    if (NPM_VALUE_OPTIONS.has(a)) i++;
+    else if (!a.startsWith("-")) {
+      bin = a;
+      break;
+    }
   }
-  const bin = rest.find((a) => !a.startsWith("-"));
+  const inside =
+    !path.relative(root, dir).startsWith("..") && !path.isAbsolute(path.relative(root, dir));
+  if (!inside) {
+    return "Blocked: npx outside the repo can't find the repo's tools, so it would download one. Run it from the repo.";
+  }
   if (
     !bin ||
-    !/^[\w.@/-]+$/.test(bin) ||
+    !/^[\w@][\w.@/-]*$/.test(bin) ||
+    bin.includes("..") ||
     !existsSync(path.join(root, "node_modules", ".bin", bin))
   ) {
     return `Blocked: ${bin ?? "that"} isn't installed from package-lock.json, so npx would download it. Use an installed tool.`;
@@ -790,108 +851,150 @@ function messageValues(/** @type {string[]} */ words) {
   return free;
 }
 
-/** Interpreters that run inline code, with the flags that introduce it. */
-const INLINE = /** @type {Record<string, string[]>} */ ({
-  node: ["-e", "--eval", "-p", "--print"],
-  python: ["-c"],
-  python3: ["-c"],
-  perl: ["-e", "-E"],
-  ruby: ["-e"],
-  php: ["-r"],
-  lua: ["-e"],
-  osascript: ["-e"],
-  bun: ["-e", "--eval"],
-  deno: ["eval"],
-});
-
 /**
- * Inline code may compute and print. Running other programs, writing or deleting files, and
- * loading code by a computed name are what an agent would use to get around the rest of this
- * guard, so inline code that mentions them is blocked. This catches the common forms, not a
- * determined one: see "What it can't see" at the top.
+ * Interpreters that run inline code: the flag (alone or bundled, like node -pe or perl -lne)
+ * that introduces it. A group named `code` captures code attached to the flag (python3 -cX).
  */
-const INLINE_RUNS_OR_WRITES = new RegExp(
-  [
-    String.raw`child_process|\bexec(Sync|File|FileSync|v?p?e?)?\s*\(|\bspawn|\bfork\s*\(|\bsystem\s*\(`,
-    String.raw`subprocess|\bpopen|\bpty\b|shutil|\bos\.(system|exec|spawn|remove|unlink|rmdir|rename|replace|chmod|link|symlink|makedirs|mkdir|write)`,
-    String.raw`shell_exec|passthru|proc_open|\bKernel\b|\bIO\.|\bFile\.|\bFileUtils|\bDeno\.|\bBun\.`,
-    String.raw`process\.(binding|_linkedBinding|dlopen|mainModule)|\bmodule\.(constructor|require)|\bglobalThis\b`,
-    String.raw`['"](node:)?fs(\/promises)?['"]|\bwriteFile|\bappendFile|WriteStream|\bunlink|\brm(Sync)?\s*\(|\brmdir|\brename|\bcopyFile|\bsymlink`,
-    String.raw`\bimport\s*\(|\brequire\s*\((?!\s*(['"])[^'"]*\1\s*\))|\beval\s*\(|\bFunction\s*\(|\bopen\s*\(|\bexec\s+["'\w]`,
-  ].join("|"),
-);
-/** Backticks and %x() run a shell command in Perl, Ruby, and PHP. */
-const SHELL_QUOTE = /`|%x[({[<]/;
-
-/** awk programs that run a command (system, cmd | getline, print | cmd) or write a file. */
-const AWK_RUNS_OR_WRITES =
-  /\bsystem\s*\(|\|\s*&?\s*getline|\bprintf?\b[^;{}]*[>|]|\bfflush\s*\(\s*\)/;
-/** sed's e command and s///e flag run a command; w and W write a file. */
-const SED_RUNS_OR_WRITES =
-  /(^|[;{}\n0-9$\/!])\s*[eWw](\s|$)|^\s*[eWw]\s|\/[gIimMp0-9]*[ew][gIimMp0-9]*\s*([;}\n]|$)|\/[gIimMp0-9]*w\s+\S/;
-
-/** The program text a sed or awk command runs, or null. */
-function editorProgram(/** @type {string[]} */ words) {
-  const name = base(words[0]);
-  const awk = ["awk", "gawk", "mawk", "nawk"].includes(name);
-  if (!awk && name !== "sed") return null;
-  const programs = [];
-  let positional = false;
-  for (let i = 1; i < words.length; i++) {
-    const a = words[i];
-    if (a === "-e" || a === "--expression" || (awk && (a === "--source" || a === "--exec"))) {
-      programs.push(words[++i] ?? "");
-      positional = true; // a program given by flag means no positional program
-    } else if (a.startsWith("--expression=")) {
-      programs.push(a.slice(13));
-      positional = true;
-    } else if (
-      awk &&
-      ["-F", "-v", "-f", "-i", "--include", "--file", "--assign", "--field-separator"].includes(a)
-    )
-      i++;
-    else if (name === "sed" && (a === "-f" || a === "--file" || a === "-l")) i++;
-    else if (a.startsWith("-") && a !== "-") continue;
-    else if (!positional) {
-      programs.push(a);
-      positional = true;
-    }
-  }
-  return { awk, program: programs.join("\n") };
-}
+const INLINE = /** @type {Record<string, RegExp>} */ ({
+  node: /^(-[a-zA-Z]*[ep]|--eval|--print)(=(?<code>.*))?$/,
+  python: /^-[a-zA-Z]*c(?<code>.*)$/,
+  perl: /^-[a-zA-Z]*[eE]$/,
+  ruby: /^-[a-zA-Z]*e$/,
+  php: /^-r$/,
+  lua: /^-e$/,
+  osascript: /^-e$/,
+  bun: /^(-e|--eval)$/,
+  deno: /^eval$/,
+});
 const GATE_MENTION =
   /\.claude|\.github|\bhooks\b|node_modules|KNOWN_BUGS|package(-lock)?\.json|tsconfig|\.prettier|scripts\//i;
 const TEST_MENTION = /\btest\/|\.test\./;
 const ENV_MENTION = /\.env(rc|\.|\b)(?!\.example|\.sample)/;
 
+/** node, nodejs, python3.12, perl5.38, ... */
+const inlineName = (/** @type {string} */ name) =>
+  name === "nodejs" ? "node" : name.replace(/^(python|perl|ruby|php|lua)[\d.]*$/, "$1");
+
+/**
+ * Inline code may compute, read, and print. Running other programs, writing or deleting
+ * files, and loading code by a computed name are what an agent would use to get around the
+ * rest of this guard, so inline code that mentions the common forms of them is blocked. A
+ * determined agent can still hide a call (see "What it can't see" at the top).
+ */
+const INLINE_RUNS_OR_WRITES = new RegExp(
+  [
+    // running programs
+    String.raw`child_process|(?<!\.)\bexec(Sync|File|FileSync|v?p?e?)?\s*\(|(?<!\.)\bexec\s+['\"\w]|\bspawn|\bfork\s*\(|\bsystem\b|\bpopen|\bpty\b`,
+    String.raw`subprocess|posix_spawn|\bos\.(exec|spawn|kill)|shell_exec|passthru|proc_open|\bKernel\b|\bIO\.popen|do shell script`,
+    String.raw`\bDeno\.(run|Command)|\bBun\.(spawn|\$)|\bworker_threads|\bvm\b`,
+    // writing, deleting, or moving files
+    String.raw`\bwriteFile|\bappendFile|WriteStream|\bunlink|\brm(Sync)?\s*\(|\brmdir|\brename(Sync)?\s*\(|\bcopyFile|\bcp(Sync)?\s*\(|\bsymlink|\btruncate`,
+    String.raw`\bopen(Sync)?\s*\([^)]*,\s*['"][^'"]*[wax+]|write_(text|bytes)|shutil\.(rm|move|copy)|\bos\.(remove|unlink|rmdir|rename|replace|chmod|link|symlink|makedirs|mkdir|truncate)`,
+    String.raw`file_put_contents|\bfopen|\bfwrite|\bFile\.(write|open|delete|rename)|\bFileUtils|\bDir\.(mkdir|delete)`,
+    // loading code by a computed name
+    String.raw`process\.(binding|_linkedBinding|dlopen|mainModule)|\bmodule\.(constructor|require)|globalThis\s*\[`,
+    String.raw`\bimport\s*\(|\brequire\s*\((?!\s*(?<q>['"])[^'"]*\k<q>\s*\))|\beval\s*\(|\bFunction\s*\(|__import__|importlib|\bgetattr\s*\(`,
+  ].join("|"),
+);
+/** Backticks, %x(), and qx() run a shell command in Perl, Ruby, and PHP. */
+const SHELL_QUOTE = /`|%x[({[<]|\bqx\s*[({[</|]/;
+/** Perl's open with a write or pipe mode: open F, ">x" / open(F, "|cmd"). */
+const PERL_OPEN = /\bopen\b[^;]*[,(]\s*['"]?\s*[|>+]/;
+
+/** awk programs that run a command (system, cmd | getline, print | cmd) or write a file. */
+function awkRunsOrWrites(/** @type {string} */ program) {
+  let p = program.replace(/"(?:\\.|[^"\\])*"/g, '""'); // a string's contents run nothing
+  if (/\bsystem\s*\(|\|\s*&?\s*getline/.test(p)) return true;
+  for (let i = 0; i < 8; i++) p = p.replace(/\([^()]*\)/g, "0"); // nor does (a > b ? x : y)
+  return /\bprintf?\b[^;{}]*[>|]/.test(p);
+}
+
+/** sed's e command and s///e flag run a command; w, W, and s///w write a file. */
+function sedRunsOrWrites(/** @type {string} */ program) {
+  let flagged = false;
+  // s commands, with any delimiter and after any address: check their flags, then drop
+  // them, so their text isn't mistaken for commands.
+  const rest = program.replace(
+    /(^|[^a-zA-Z_\\])s([^\\\n\w\s])((?:\\.|(?!\2)[^\\\n])*)\2((?:\\.|(?!\2)[^\\\n])*)\2([a-zA-Z0-9]*)/g,
+    (_, lead, _d, _a, _b, flags) => {
+      if (/[ewW]/.test(flags)) flagged = true;
+      return `${lead}s`;
+    },
+  );
+  const address = String.raw`(\d+|\$|\/(?:\\.|[^\/\\])*\/)`;
+  const command = new RegExp(
+    String.raw`(^|[;{}\n])\s*(${address}(\s*,\s*${address})?)?\s*!?\s*[eWw](\s|$)`,
+  );
+  return flagged || command.test(rest);
+}
+
+/** The program text a sed or awk command runs, or a reason it can't be checked. */
+function editorProgram(/** @type {string[]} */ words) {
+  const name = base(words[0]);
+  const awk = ["awk", "gawk", "mawk", "nawk"].includes(name);
+  if (!awk && name !== "sed") return null;
+  /** @type {string[]} */
+  const programs = [];
+  let fromFile = false;
+  const valueOptions = awk
+    ? ["-F", "-v", "-i", "-l", "--include", "--load", "--assign", "--field-separator"]
+    : ["-l", "--line-length"];
+  for (let i = 1; i < words.length; i++) {
+    const a = words[i];
+    const eq = a.indexOf("=");
+    const flag = a.startsWith("--") && eq > 0 ? a.slice(0, eq) : a;
+    const attached = a.startsWith("--") && eq > 0 ? a.slice(eq + 1) : undefined;
+    if (["-e", "--expression"].includes(flag) || (awk && ["--source", "--exec"].includes(flag))) {
+      programs.push(attached ?? words[++i] ?? "");
+    } else if (["-f", "--file"].includes(flag) || (awk && flag === "-E")) {
+      const file = attached ?? words[++i] ?? "";
+      if (file === "-" || file.startsWith("/dev/") || file.startsWith("/proc/")) {
+        return {
+          block: `Blocked: ${name} reading its program from a stream can't be checked. Run the commands directly.`,
+        };
+      }
+      fromFile = true;
+    } else if (valueOptions.includes(flag)) {
+      if (attached === undefined) i++;
+    } else if (a.startsWith("-") && a !== "-") continue;
+    else if (programs.length === 0 && !fromFile) programs.push(a);
+    else break; // the rest are input files
+  }
+  return { awk, program: programs.join("\n") };
+}
+
 /** Why inline interpreter code is not allowed, or null. */
 function checkInline(/** @type {string[]} */ words, /** @type {() => boolean} */ locked) {
   const editor = editorProgram(words);
   if (editor) {
-    const re = editor.awk ? AWK_RUNS_OR_WRITES : SED_RUNS_OR_WRITES;
-    if (re.test(editor.program)) {
+    if ("block" in editor) return editor.block;
+    if (editor.awk ? awkRunsOrWrites(editor.program) : sedRunsOrWrites(editor.program)) {
       return `Blocked: this ${base(words[0])} program runs a command or writes a file, which the guard can't follow. Use the Edit tool to change files, and run commands directly.`;
     }
     return null;
   }
-  const name = base(words[0]);
-  const flags = INLINE[name];
-  if (!flags) return null;
-  const i = words.findIndex((w, j) => j > 0 && flags.some((f) => w === f || w.startsWith(`${f}=`)));
+  const name = inlineName(base(words[0]));
+  const flag = INLINE[name];
+  if (!flag) return null;
+  const i = words.findIndex((w, j) => j > 0 && flag.test(w));
   if (i < 0) return null;
-  const code =
-    words.slice(i + 1).join(" ") +
-    (words[i].includes("=") ? words[i].split("=").slice(1).join("=") : "");
+  const attached = words[i].match(flag)?.groups?.code ?? "";
+  const code = [attached, ...words.slice(i + 1)].join(" ");
 
   if (GATE_MENTION.test(code)) return `Blocked: inline code that touches the gates. ${GATE_REASON}`;
   if (ENV_MENTION.test(code)) return "Blocked: inline code that touches a .env file.";
   if (TEST_MENTION.test(code) && locked())
     return `Blocked: inline code that touches tests. ${LOCKED_TEST_REASON}`;
-  if (
-    INLINE_RUNS_OR_WRITES.test(code) ||
-    (["perl", "ruby", "php"].includes(name) && SHELL_QUOTE.test(code))
-  ) {
-    return "Blocked: inline code may compute and print, but not run programs, write files, or load code by a computed name. Run the command directly, or use the Edit tool for files.";
+  const hit =
+    code.match(INLINE_RUNS_OR_WRITES)?.[0] ??
+    (["perl", "ruby", "php"].includes(name) ? code.match(SHELL_QUOTE)?.[0] : undefined) ??
+    (name === "perl" ? code.match(PERL_OPEN)?.[0] : undefined);
+  if (hit) {
+    return (
+      `Blocked: inline code that uses "${hit.trim()}". Inline code may compute, read, and print, but ` +
+      "not run programs, write files, or load code by a computed name. Run the command " +
+      "directly, use the Edit tool to change files, or use the Read tool to read them."
+    );
   }
   return null;
 }
@@ -1041,6 +1144,9 @@ export function check(input, root, cwd = root, depth = 0) {
       }
       words = ["git", ...args];
       gitSub = args[0] ?? "";
+      if (gitSub === "commit" && args.includes("--allow-empty")) {
+        return "Blocked: an empty commit only re-runs CI, which could re-roll the review until it passes. Commit a change that fixes what failed.";
+      }
       if (gitSub === "push") {
         const reason = checkPush(args, dir);
         if (reason) return reason;
@@ -1059,7 +1165,7 @@ export function check(input, root, cwd = root, depth = 0) {
         return "Blocked: xargs runs a command on paths from its input, which the guard can't see.";
       }
     }
-    const runner = packageRunner(words, root);
+    const runner = packageRunner(words, root, dir);
     if (runner) return runner;
     if (name === "find" && words.some((a) => /^-(exec|execdir|ok|okdir)$/.test(a))) {
       return "Blocked: find -exec runs commands the guard can't see. List the files, then act on them by name.";

@@ -76,8 +76,10 @@ piping into a shell or interpreter, `source`, `trap`, and shell expansion in com
 can write files. Expansion is still fine in commit messages, PR text, variable
 assignments, and `cd`. It also blocks gh API writes, `gh alias`, re-running or dispatching CI,
 and changing git config or settings that change what commands run. Inline code (`node -e`,
-`python -c`, awk and sed programs) may compute and print, but not run programs or write
-files, and `npx` runs only tools installed from `package-lock.json`. Read-only commands (`cat`, `ls`, `grep`, `rg`,
+`python -c`, awk and sed programs) may compute, read, and print; the common forms of
+running programs or writing files from it are blocked. `npx` runs only tools installed in
+the repo's `node_modules`, and runners that always download (`pnpm dlx`, `uvx`, ...) are
+blocked. Read-only commands (`cat`, `ls`, `grep`, `rg`,
 `git diff`, `git log`, and a few more) run freely. The hooks are tested in `hooks/test/`,
 and `verify` runs those tests. The PreToolUse hooks fail closed: an internal error blocks
 the action, and `"onFailure": "block"` blocks it if the hook can't run at all (Claude Code
