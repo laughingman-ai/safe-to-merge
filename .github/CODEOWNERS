@@ -9,3 +9,8 @@
 /.prettierrc.json @MJL40635
 /.prettierignore @MJL40635
 /scripts/ @MJL40635
+/.gitattributes @MJL40635
+/.nvmrc @MJL40635
+/demo/fixtures/ @MJL40635
+/LICENSE @MJL40635
+/SECURITY.md @MJL40635

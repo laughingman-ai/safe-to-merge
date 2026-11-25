@@ -109,7 +109,8 @@ node -e '
   const important = r.findings.filter((f) => f.severity === "important").length;
   console.log(`   ${r.verdict === "pass" ? "PASSED" : "FAILED"}  ${important} important finding(s)`);
 ' "$fixtures/review.json"
-jq -r .summary "$fixtures/review.json" | fold -s -w 93 | sed 's/ *$//; s/^/   /'
+node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).summary)' \
+  "$fixtures/review.json" | fold -s -w 93 | sed 's/ *$//; s/^/   /'
 
 step "12. It tries to merge its own PR"
 say "   Bash: gh pr merge --squash --delete-branch"

@@ -7,6 +7,12 @@ to the matching commits in this repository's history. "PR #2" in them means that
 request, not #2 here.
 
 The first two reviews ran locally and the owner posted them. The third ran in GitHub Actions.
+Line numbers in the quotes are the reviewer's own and are sometimes a little off: review 1's
+`hooks/guard-bash.mjs:112` is `checkPush`, which starts at line 124 in `a1837a3`.
+
+The 2026-10-20 merge commits in `git log` ("Merge pull request #2", "#3", "#4") are from that
+earlier repository, so their PR numbers point there. The 2026-11-18 ones with the same
+numbers are this repository's own PRs.
 
 ## 1. Fail, on [`a1837a3`](https://github.com/laughingman-ai/safe-to-merge/commit/a1837a3)
 
@@ -35,7 +41,11 @@ Fixed in [`08e5956`](https://github.com/laughingman-ai/safe-to-merge/commit/08e5
 `--receive-pack`, and `--exec`. `hooks/test/guard-bash.test.mjs` covers
 `git push --repo origin origin main`.
 
-Four review rounds, named in the commit messages, hardened the hooks and the reviewer itself:
+Review 2 passed, but the repo wasn't done. Four more rounds of review followed, by
+separate fresh-context agents that reviewed the whole repository rather than by this
+reviewer. They found the bigger gaps: checks a token could forge, ways to merge, holes in
+the test lock, and ways to delete the gates. Each round's fixes are in one commit, named in
+its message:
 [`08e5956`](https://github.com/laughingman-ai/safe-to-merge/commit/08e5956), [`5c2f79a`](https://github.com/laughingman-ai/safe-to-merge/commit/5c2f79a), [`642956e`](https://github.com/laughingman-ai/safe-to-merge/commit/642956e), and [`3d92fef`](https://github.com/laughingman-ai/safe-to-merge/commit/3d92fef).
 
 ## 3. Pass, in GitHub Actions, on [`3d92fef`](https://github.com/laughingman-ai/safe-to-merge/commit/3d92fef)

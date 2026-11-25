@@ -9,10 +9,10 @@ Two owner steps make the rules on `main` hold against an agent, not just guide i
 2. **An Anthropic API key for the CI reviewer**, so `review/fresh-context` runs in GitHub
    Actions, where a personal token can't forge it.
 
-Until step 1 is done, the agent shares the owner's GitHub identity, so it could reach
-anything the owner can, including the admin bypass on the "main: human approval" rule. The
-hooks catch the common ways it might try, but they are not a boundary; the owner reviewing
-what gets merged is. The owner merges every PR with that bypass until then.
+Both are done for this repo. The App was created on 2026-11-25 (App ID `5922716`,
+installation `185804595`, on `safe-to-merge` only), and the approval rule's admin bypass was
+removed the same day. Before that, the agent shared the owner's identity, and PRs #2 to #4
+were merged through the bypass.
 
 ## 1. The agent's GitHub App
 
@@ -27,17 +27,25 @@ authored by `laughingman-agent[bot]`, so the owner can approve them.
 3. **Webhook:** uncheck **Active**. Nothing needs to receive events.
 4. **Repository permissions.** Set exactly these and leave everything else at **No access**:
 
-   | Permission    | Access         | Why                        |
-   | ------------- | -------------- | -------------------------- |
-   | Contents      | Read and write | push branches              |
-   | Pull requests | Read and write | open and update PRs        |
-   | Issues        | Read and write | read and comment on issues |
-   | Metadata      | Read-only      | required by GitHub         |
+   | Permission    | Access         | Why                           |
+   | ------------- | -------------- | ----------------------------- |
+   | Contents      | Read and write | push branches                 |
+   | Pull requests | Read and write | open and update PRs           |
+   | Issues        | Read and write | read and comment on issues    |
+   | Workflows     | Read and write | propose changes to CI, in PRs |
+   | Metadata      | Read-only      | required by GitHub            |
 
-   Check that these stay at **No access**: **Workflows** (so it can't change
-   `.github/workflows`, even on a branch), **Commit statuses** and **Checks** (so it can't
+   Check that these stay at **No access**: **Commit statuses** and **Checks** (so it can't
    post `verify` or `review/fresh-context`), **Administration** (no settings or rulesets),
    **Secrets**, **Actions**.
+
+   **Why Workflows is safe to grant.** Without it, the agent couldn't touch `.github/`, so
+   every CI change would have to come from the owner, and nobody could approve the owner's
+   own PRs. With it, the agent proposes CI changes like any other change, and three things
+   keep a PR's workflow edits from doing harm before the owner approves: both workflows run
+   on `pull_request_target`, so their definitions come from `main`; the reviewer's API key
+   is a secret of the `reviewer` environment, which only `main` can use; and CODEOWNERS puts
+   every `.github/` change in front of the owner.
 
 5. **Organization and account permissions:** none.
 6. **Where can this GitHub App be installed?** **Only on this account.**
@@ -77,11 +85,10 @@ That hides the owner's credentials from `gh` and `git`, but the session still ru
 owner's OS user. For hard isolation, run the session in a container or as a separate OS
 user that has no owner credentials at all.
 
-### Then tighten the approval rule (owner)
+### Then remove the approval rule's bypass (owner)
 
-Once agent PRs come from the App, the owner approves them like any reviewer, and the admin
-bypass on "main: human approval" is only needed for PRs the owner writes. To require an
-approval on every PR, with no bypass:
+Once agent PRs come from the App, the owner approves them like any reviewer, and the owner
+doesn't write PRs. Remove the admin bypass so every PR needs an approval:
 
 ```sh
 gh api repos/laughingman-ai/safe-to-merge/rulesets --jq '.[] | "\(.id) \(.name)"'
@@ -92,8 +99,10 @@ gh api -X PUT repos/laughingman-ai/safe-to-merge/rulesets/<id of "main: human ap
 ## 2. The CI reviewer key
 
 `.github/workflows/review.yml` runs the fresh-context review in GitHub Actions and needs
-an Anthropic API key as the repository secret `ANTHROPIC_API_KEY`. Until it's set, the
-review job fails with a message pointing here, and nothing can merge.
+an Anthropic API key as the secret `ANTHROPIC_API_KEY` of the `reviewer` environment. The
+environment only allows `main`, and `pull_request_target` runs count as `main`, so the
+review job can read the key but a workflow added in a PR can't. Until the secret is set,
+the review job fails with a message pointing here, and nothing can merge.
 
 1. In the [Anthropic Console](https://platform.claude.com), create a workspace for this
    repo's CI (e.g. `safe-to-merge-ci`) and set a monthly **spend limit** on it. Each review
@@ -102,12 +111,18 @@ review job fails with a message pointing here, and nothing can merge.
 2. Create an API key in that workspace. Use it for nothing else.
 3. Save it in 1Password, personal account (`my.1password.com`) only: an item in **Private**
    named `safe-to-merge CI Anthropic key`, field `credential`.
-4. Set the secret straight from the vault, so the key never appears in your shell history
-   or on screen:
+4. Create the environment, limited to `main`, then set the secret straight from the vault,
+   so the key never appears in your shell history or on screen:
 
    ```sh
+   repo=laughingman-ai/safe-to-merge
+   gh api -X PUT "repos/$repo/environments/reviewer" --input - <<<'{"deployment_branch_policy":
+     {"protected_branches": false, "custom_branch_policies": true}}'
+   gh api -X POST "repos/$repo/environments/reviewer/deployment-branch-policies" -f name=main
    op read --account my.1password.com "op://Private/safe-to-merge CI Anthropic key/credential" \
-     | gh secret set ANTHROPIC_API_KEY --repo laughingman-ai/safe-to-merge
+     | gh secret set ANTHROPIC_API_KEY --repo "$repo" --env reviewer
    ```
+
+   Don't also set it as a repository secret: any workflow can read those.
 
 5. Re-run the **review** job on any open PR (or push a commit).
