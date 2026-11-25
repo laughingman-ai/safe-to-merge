@@ -803,16 +803,16 @@ function packageRunner(
   else if (name === "npm" && ["exec", "x"].includes(sub ?? ""))
     rest = words.slice(words.indexOf(sub ?? "") + 1);
   else return null;
-  const risky = rest.find((a) => NPM_RISKY_OPTION.test(a));
-  if (risky) {
-    return `Blocked: npx ${risky.split("=")[0]} runs code that isn't installed from package-lock.json, or from somewhere else.`;
-  }
+  // npx's own options come before the tool's name; the tool's arguments are its business.
   let bin;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--") {
       bin = rest[i + 1];
       break;
+    }
+    if (NPM_RISKY_OPTION.test(a)) {
+      return `Blocked: npx ${a.split("=")[0]} runs code that isn't installed in this repo, or from somewhere else.`;
     }
     if (NPM_VALUE_OPTIONS.has(a)) i++;
     else if (!a.startsWith("-")) {
@@ -827,8 +827,7 @@ function packageRunner(
   }
   if (
     !bin ||
-    !/^[\w@][\w.@/-]*$/.test(bin) ||
-    bin.includes("..") ||
+    !/^[\w@][\w.@-]*$/.test(bin) ||
     !existsSync(path.join(root, "node_modules", ".bin", bin))
   ) {
     return `Blocked: ${bin ?? "that"} isn't installed from package-lock.json, so npx would download it. Use an installed tool.`;

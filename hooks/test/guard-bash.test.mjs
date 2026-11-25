@@ -783,6 +783,8 @@ describe("round four: one-line bypasses", () => {
       `sed 's/one/two/g' src/math.ts`,
       `sed 's/foo/ e /' src/math.ts`,
       `sed 's|a|b|g' src/math.ts`,
+      `sed '/e /d' src/math.ts`,
+      `sed 's/a/ w /' src/math.ts`,
     ]) {
       allows(repo, command);
     }
@@ -841,5 +843,8 @@ describe("round four: one-line bypasses", () => {
     allows(repo, "npx tsc --noEmit");
     allows(repo, "npx --loglevel silent prettier --check src");
     allows(repo, "npm exec -- tsc --noEmit");
+    allows(repo, "npx tsc --noEmit --pretty false");
+    allows(repo, "npx prettier -c src");
+    blocks(repo, "npx src/evil");
   });
 });
