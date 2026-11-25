@@ -12,13 +12,19 @@ name: review
 # env block, no apiKeyHelper, no hooks, no MCP servers. ANTHROPIC_BASE_URL is pinned below
 # as well. A PR into another branch gets no review job and no API key.
 #
-# This workflow file itself comes from the PR, which is why .github/ is a gate: agents
-# can't edit it (hooks), changes need the code owner's review, and once the agent's GitHub
-# App exists it will have no Workflows permission. Until then, an agent on the owner's token
-# that gets past the hooks could change this file in a PR; the key's spend limit caps that.
+# The workflow runs on pull_request_target, so its definition comes from main, not from the
+# PR: a PR that edits this file can't change how it is reviewed or reach the API key before
+# the owner approves and merges it. PRs from forks fail the check
+# without running anything, because pull_request_target would give them the key; the owner
+# re-pushes a fork's branch to this repo instead.
+#
+# MIGRATION: `pull_request` is still listed so the PR that adds pull_request_target can be
+# checked at all. The next PR removes it.
 
 on:
   pull_request:
+    branches: [main]
+  pull_request_target:
     branches: [main]
 
 permissions:
@@ -26,7 +32,7 @@ permissions:
   pull-requests: write # comment the findings
 
 concurrency:
-  group: review-${{ github.event.pull_request.number }}
+  group: review-${{ github.event_name }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -35,23 +41,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # A skipped job would count as passing, so a fork's PR fails here instead.
+      - name: Only branches in this repository
+        if: github.event_name != 'push' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::PRs from forks aren't checked here. The owner re-pushes the branch to this repository."
+          exit 1
       - name: Check out the base branch (the reviewer)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: trusted
           persist-credentials: false
       - name: Check out the PR head (the code under review, read only)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: pr
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code@2.1.290
+        run: npm install -g @anthropic-ai/claude-code@2.1.322
       - name: Review
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
