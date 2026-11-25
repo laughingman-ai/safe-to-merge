@@ -689,3 +689,87 @@ describe("round three", () => {
     });
   });
 });
+
+describe("round four: one-line bypasses", () => {
+  const repo = makeRepo({ branch: "feat/x", nodeModules: true });
+
+  describe("inline code that runs programs or writes files", () => {
+    for (const command of [
+      `node -e "require('child_process').execSync('gh pr merge 5 --admin')"`,
+      `node -e "require('child_'+'process')"`,
+      `node -e "process.mainModule.require('x')"`,
+      `node -p "require('fs').writeFileSync('x', 'y')"`,
+      `node -e "require('node:fs/promises')"`,
+      `node --eval "import('child_process')"`,
+      `python3 -c "import os; os.system('rm -rf x')"`,
+      `python3 -c "import subprocess"`,
+      `python3 -c "open('x', 'w').write('y')"`,
+      `perl -e 'system("ls")'`,
+      "perl -e 'print `ls`'",
+      `ruby -e 'exec "ls"'`,
+      `php -r 'shell_exec("ls");'`,
+      `awk 'BEGIN{system("rm -rf hooks")}'`,
+      `awk '{print > "out.txt"}' src/math.ts`,
+      `awk 'BEGIN{"date" | getline d}'`,
+      `gawk -e 'BEGIN{system("x")}'`,
+      `sed -n '1e rm -rf hooks' src/math.ts`,
+      `sed 's/x/rm -rf hooks/e' src/math.ts`,
+      `sed -n 'w out.txt' src/math.ts`,
+    ]) {
+      blocks(repo, command);
+    }
+    for (const command of [
+      `node -e "console.log(1 + 1)"`,
+      `node -p "[1, 2, 3].map((n) => n * 2).join(',')"`,
+      `python3 -c "print(2)"`,
+      `awk '{print $1}' src/math.ts`,
+      `awk '$3 > 5 {print $1}' src/math.ts`,
+      `awk -F: '{print $2}' src/math.ts`,
+      `sed -n '1,5p' src/math.ts`,
+      `sed 's/one/two/g' src/math.ts`,
+    ]) {
+      allows(repo, command);
+    }
+  });
+
+  describe("pattern refspecs", () => {
+    blocks(repo, "git push origin 'refs/heads/*:refs/heads/*'");
+    blocks(repo, "git push origin '*:*'");
+    allows(repo, "git push origin feat/x");
+  });
+
+  describe("re-running or dispatching workflows", () => {
+    for (const command of [
+      "gh run rerun 123",
+      "gh run rerun 123 --failed",
+      "gh run cancel 123",
+      "gh run delete 123",
+      "gh workflow run review.yml",
+    ]) {
+      blocks(repo, command);
+    }
+    allows(repo, "gh run list");
+    allows(repo, "gh run view 123 --log-failed");
+    allows(repo, "gh workflow list");
+  });
+
+  describe("packages that aren't installed", () => {
+    for (const command of [
+      "npx -y cowsay hi",
+      "npx cowsay hi",
+      "npx --package=cowsay cowsay",
+      "npx -c 'rm -rf hooks'",
+      "npm exec -- cowsay",
+      "npm x cowsay",
+      "pnpm dlx cowsay",
+      "yarn dlx cowsay",
+      "bunx cowsay",
+      "bun x cowsay",
+    ]) {
+      blocks(repo, command);
+    }
+    allows(repo, "npx prettier --check src");
+    allows(repo, "npx tsc --noEmit");
+    allows(repo, "npm exec -- tsc --noEmit");
+  });
+});
