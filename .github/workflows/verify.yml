@@ -1,7 +1,18 @@
 name: verify
 
+# The pull_request_target run takes its definition from main, checks out the PR head, and
+# runs it with a read-only token, no secrets, and no cache (a cache written there would land
+# in main's scope). PRs from forks fail without running anything; the owner re-pushes a
+# fork's branch here instead.
+#
+# MOVING TO pull_request_target. This step only adds the trigger, so the next PR, which
+# removes `pull_request` and moves the API key into the `reviewer` environment, is checked
+# by main's workflow instead of its own. Until then both triggers run, and `pull_request`
+# still reads the workflow from the PR, as it did before this change.
+
 on:
   pull_request:
+  pull_request_target:
   push:
     branches: [main]
 
@@ -12,16 +23,21 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # A skipped job would count as passing, so a fork's PR fails here instead.
+      - name: Only branches in this repository
+        if: github.event_name != 'push' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::PRs from forks aren't checked here. The owner re-pushes the branch to this repository."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The PR head itself, not the merge preview: the test lock reads the branch's own commits.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: npm
       - run: npm ci
       # Run verify directly, not through an npm script, so package.json can't redefine it.
       - run: node scripts/verify.mjs
