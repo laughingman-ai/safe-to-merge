@@ -74,8 +74,12 @@ fighting the gates. They are a filter, not a sandbox:
 Rather than list every dangerous command, the shell guard leans conservative. It blocks
 piping into a shell or interpreter, `source`, `trap`, and shell expansion in commands that
 can write files. Expansion is still fine in commit messages, PR text, variable
-assignments, and `cd`. It also blocks gh API writes and `gh alias`, and changing git config
-or settings that change what commands run. Read-only commands (`cat`, `ls`, `grep`, `rg`,
+assignments, and `cd`. It also blocks gh API writes, `gh alias`, re-running or dispatching CI,
+and changing git config or settings that change what commands run. Inline code (`node -e`,
+`python -c`, awk and sed programs) may compute, read, and print; the common forms of
+running programs or writing files from it are blocked. `npx` runs only tools installed in
+the repo's `node_modules`, and runners that always download (`pnpm dlx`, `uvx`, ...) are
+blocked. Read-only commands (`cat`, `ls`, `grep`, `rg`,
 `git diff`, `git log`, and a few more) run freely. The hooks are tested in `hooks/test/`,
 and `verify` runs those tests. The PreToolUse hooks fail closed: an internal error blocks
 the action, and `"onFailure": "block"` blocks it if the hook can't run at all (Claude Code
@@ -115,8 +119,9 @@ removed. The checks rule has no bypass for anyone.
 ## Limits, stated plainly
 
 - **The shell guard is a filter, not a sandbox.** It catches common shortcuts. It can't see
-  what a script file the agent writes and then runs will do, or what a program it allows
-  does with values computed at run time and passed through variables, files, or pipes. That's accepted risk:
+  what a script file the agent writes and then runs will do, what inline code does when it
+  hides the name of what it calls, or what a program it allows does with values computed at
+  run time and passed through variables, files, or pipes. That's accepted risk:
   anything that reaches the repo still has to pass CI, the review, and the rules on `main`.
 - PowerShell gets a coarser check than POSIX shells. Any command that names a protected
   path, runs a string, or reads `$env:` is blocked.
