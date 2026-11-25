@@ -12,18 +12,14 @@ name: review
 # env block, no apiKeyHelper, no hooks, no MCP servers. ANTHROPIC_BASE_URL is pinned below
 # as well. A PR into another branch gets no review job and no API key.
 #
-# The pull_request_target run takes its definition from main, not from the PR. PRs from
-# forks fail the check without running anything, because pull_request_target would give
-# them the key; the owner re-pushes a fork's branch to this repo instead.
-#
-# MOVING TO pull_request_target. This step only adds the trigger, so the next PR, which
-# removes `pull_request` and moves the API key into the `reviewer` environment, is checked
-# by main's workflow instead of its own. Until then both triggers run, and `pull_request`
-# still reads the workflow from the PR, as it did before this change.
+# The workflow runs only on pull_request_target, so its definition comes from main, not
+# from the PR: a PR that edits this file can't change how it is reviewed. The API key is a
+# secret of the `reviewer` environment, which only main can use, so a workflow that a PR
+# adds can't read it either. PRs from forks fail the check without running anything,
+# because pull_request_target would give them the key; the owner re-pushes a fork's branch
+# to this repo instead.
 
 on:
-  pull_request:
-    branches: [main]
   pull_request_target:
     branches: [main]
 
@@ -32,12 +28,13 @@ permissions:
   pull-requests: write # comment the findings
 
 concurrency:
-  group: review-${{ github.event_name }}-${{ github.event.pull_request.number }}
+  group: review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   review:
     name: review/fresh-context
+    environment: reviewer # holds ANTHROPIC_API_KEY; only main may use it
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

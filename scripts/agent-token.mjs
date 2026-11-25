@@ -2,8 +2,11 @@
 // @ts-check
 // Mint a GitHub App installation token for the agent identity and print it to stdout.
 // The token lasts one hour, is scoped to this repository, and carries only the permissions
-// below. It can push branches, open PRs, and comment. It can't merge past the rules on main,
-// approve its own PRs, change workflows, post statuses or checks, or change settings.
+// below. It can push branches (including workflow changes), open PRs, and comment. It can't
+// merge past the rules on main, approve its own PRs, post statuses or checks, or change
+// settings. It may push workflow changes because both workflows run on pull_request_target
+// (a PR's edits to them don't run before merge), and the reviewer's API key is a secret of
+// the `reviewer` environment, which only main can use. A workflow a PR adds can't read it.
 //
 // Env: AGENT_APP_ID, AGENT_APP_INSTALLATION_ID, AGENT_APP_PRIVATE_KEY (PEM text, injected
 // from the vault by scripts/agent-session.sh; never stored in a file).
@@ -25,6 +28,7 @@ export const PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
   issues: "write",
+  workflows: "write",
   metadata: "read",
 };
 

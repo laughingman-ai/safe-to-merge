@@ -18,8 +18,8 @@ npm run verify          # VERIFY PASSED: main has the bug, but no test covers it
 Start the agent. With the agent's GitHub App set up ([docs/AGENT_IDENTITY.md](../docs/AGENT_IDENTITY.md)),
 use `scripts/agent-session.sh`, so it pushes and opens PRs as `laughingman-agent[bot]`
 and you approve them. Without it, plain `claude` works, but the agent acts as you on
-GitHub. The hooks catch the common ways it might merge, but the real stop is that it
-has no identity of its own: you merge with the admin bypass on the approval rule.
+GitHub: the hooks catch the common ways it might merge, and nothing on GitHub tells its PRs
+from yours.
 
 Claude Code asks you to trust the folder; the hooks in `.claude/settings.json` load once
 you do. Run `/hooks` to see them. The hooks need Claude Code v2.1.295 or later (for
@@ -41,9 +41,9 @@ you do. Run `/hooks` to see them. The hooks need Claude Code v2.1.295 or later (
    comments its findings on the PR. `npm run review -- <pr-number>` gives you the same
    review locally as a preview; it posts no status.
 6. On GitHub, the PR can merge only with `verify` and `review/fresh-context` passing on the
-   current head, both from GitHub Actions. If the PR comes from the agent's GitHub App, it
-   also needs your approval. Until the App exists, PRs come from your own account, which
-   can't approve itself, so you merge with the admin bypass on the approval rule.
+   current head, both from GitHub Actions, and with an approval from someone other than its
+   author. With the agent's GitHub App, that's you. Without it, the PR is yours, so it needs
+   a second account to approve it.
 
 ## Resetting
 

@@ -1,17 +1,11 @@
 name: verify
 
-# The pull_request_target run takes its definition from main, checks out the PR head, and
-# runs it with a read-only token, no secrets, and no cache (a cache written there would land
-# in main's scope). PRs from forks fail without running anything; the owner re-pushes a
-# fork's branch here instead.
-#
-# MOVING TO pull_request_target. This step only adds the trigger, so the next PR, which
-# removes `pull_request` and moves the API key into the `reviewer` environment, is checked
-# by main's workflow instead of its own. Until then both triggers run, and `pull_request`
-# still reads the workflow from the PR, as it did before this change.
+# Runs on pull_request_target, so the workflow definition comes from main and a PR can't
+# change what its own check runs. It checks out the PR head and runs it with a read-only
+# token, no secrets, and no cache (a cache written here would land in main's scope). PRs
+# from forks fail without running anything; the owner re-pushes a fork's branch here.
 
 on:
-  pull_request:
   pull_request_target:
   push:
     branches: [main]

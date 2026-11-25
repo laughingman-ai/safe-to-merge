@@ -17,8 +17,8 @@ npm run replay
 
 ![A terminal running npm run replay: an agent reproduces the weekend due-date bug, seven shortcuts are blocked, it fixes the code, the review passes, and its attempt to merge its own PR is blocked.](demo/replay.svg)
 
-The replay is one agent session, recorded as tool calls and fed to the same hooks Claude
-Code runs. The agent reproduces the bug, then tries eight shortcuts, and the hooks stop
+The replay is a scripted agent session: tool calls written to show the shortcuts an agent
+takes, fed to the same hooks Claude Code runs. The agent reproduces the bug, then tries eight shortcuts, and the hooks stop
 each one. Seven come before the fix:
 
 ```
@@ -58,7 +58,7 @@ There are two layers, and they do different jobs.
 | The fresh-context review          | `.github/workflows/review.yml` runs only for PRs into `main`. Its instructions, schema, and `KNOWN_BUGS.md` come from `main`. Claude Code starts in an empty directory with no project settings, reads a read-only copy of the PR with `.claude/`, `.mcp.json`, and `CLAUDE.md` removed, and gets the diff as delimited, untrusted data. |
 | The rules on `main`               | GitHub rulesets: no direct pushes, force pushes, or deletion; both checks green on an up-to-date head; one approval plus code-owner review.                                                                                                                                                                                              |
 | CODEOWNERS                        | Changes to the gates (`.claude/`, `.github/`, `hooks/`, `scripts/`, config, `KNOWN_BUGS.md`) need the owner's review.                                                                                                                                                                                                                    |
-| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)). **Not set up yet; see "Who can merge".** Once it exists: no admin role, so it can't bypass a rule; no Workflows, Statuses, or Checks permission; its PRs are approved by the owner.                                                                                |
+| A separate identity for the agent | The `laughingman-agent` GitHub App ([setup](docs/AGENT_IDENTITY.md)). No admin role and no bypass, so it can't get past a rule; no Statuses, Checks, or Administration permission; the owner approves its PRs.                                                                                                                           |
 
 **Defense in depth** is the hooks in `.claude/settings.json`. They catch common shortcuts
 early, inside the session, and tell the agent why, so it fixes the code instead of
@@ -86,24 +86,23 @@ through an npm script, and the Stop hook runs it too.
 
 ## Who can merge
 
-**Until the agent has its own GitHub App identity, it shares the owner's identity.** The
-agent's session uses the owner's GitHub token, so it could reach anything the owner can,
-including the admin bypass on the "main: human approval" rule. The hooks catch the common
-ways it might try, but they are not what stops it. Until the App exists, the real stop is
-the owner reviewing what gets merged.
+The agent works as `laughingman-agent[bot]`, a GitHub App with no admin role, through
+`scripts/agent-session.sh`. Every PR needs both checks green and the owner's approval, and
+neither rule has a bypass for anyone, the owner included. The agent opens the PR and stops;
+the owner approves and merges.
 
-Today the owner merges every PR with that admin bypass, because nobody else can approve the
-owner's PRs. Once the GitHub App is set up, the agent works as `laughingman-agent[bot]`
-through `scripts/agent-session.sh`, its PRs need the owner's approval, and the bypass can be
-removed. The checks rule has no bypass for anyone.
+Until 2026-11-25 the agent used the owner's GitHub account, and the approval rule had an
+admin bypass. PRs #2 to #4 here were merged through that bypass, by the agent, with no
+approval on record: exactly what this repo says shouldn't happen. That's why the App exists
+and the bypass is gone.
 
 ## Why it's built this way
 
 - **A rule in a prompt is a suggestion. A rule in a hook is a fact.** `CLAUDE.md` tells the
   agent what to do. The hooks enforce the important parts in the session, and CI and the
   rules on `main` enforce them where the agent can't reach.
-- **Tests come first and then stay put.** A bug fix starts with a test that fails. Once it's
-  committed, the only way to green is to change the code. CI checks that the reproduction
+- **Tests come first and then stay put.** A bug fix starts on a `fix/*` branch with a test
+  that fails. Once it's committed, the only way to green is to change the code. CI checks that the reproduction
   really fails at its own commit and that no test changed after it.
 - **The author never approves its own work.** The reviewer is a new process with no memory
   of the session, its instructions come from `main`, and its verdict is bound to one
@@ -120,21 +119,21 @@ removed. The checks rule has no bypass for anyone.
   anything that reaches the repo still has to pass CI, the review, and the rules on `main`.
 - PowerShell gets a coarser check than POSIX shells. Any command that names a protected
   path, runs a string, or reads `$env:` is blocked.
-- The test lock reads local git history, so locally it's only as strong as that history.
+- The test lock applies to `fix/*` branches, where `CLAUDE.md` puts bug fixes. A fix made on
+  a branch with another name isn't locked; the reviewer and the owner see that it changes
+  tests. The lock reads local git history, so locally it's only as strong as that history.
   The hooks catch the common rewrites, and CI re-checks the pushed branch.
 - The Stop hook re-runs verify on every stop attempt, even when `stop_hook_active` is true.
   Claude Code overrides a Stop block after eight consecutive continuations with no tool
   call in between, and each tool call resets the count. So an agent that keeps working
   keeps going, and one that only tries to stop is eventually let out with verify still
   red. CI runs the same verify, so that work can't merge.
-- A PR's workflow files come from the PR, so a PR could change what CI runs, including
-  `review.yml`, which has the reviewer's API key in scope. That's why `.github/` is a gate:
-  the hooks catch agents editing it, CODEOWNERS requires the owner's review, and once the
-  agent's GitHub App exists, it will have no Workflows permission, so it can't push workflow
-  changes at all. **Until then, an agent on the owner's token that gets past the hooks could
-  change `review.yml` in a PR** and run its own code with the key. That's accepted risk
-  until the App exists; the key's workspace spend limit caps the damage, and the owner
-  reviews the PR before it merges.
+- Both workflows run on `pull_request_target`, so their definitions come from `main` and a PR
+  can't change what its own checks run. The reviewer's API key is a secret of the
+  `reviewer` environment, which only `main` can use, so a workflow a PR adds can't read it.
+  A PR could still add a workflow that posts a passing check under the same name; every
+  `.github/` change needs the owner's review (CODEOWNERS), and the owner approves every PR.
+  PRs from forks fail both checks without running anything; the owner re-pushes them here.
 - The secrets guard matches known credential formats, including ones split across quotes.
   It can't see a credential assembled from variables at run time.
 - `scripts/agent-session.sh` hides the owner's credentials from `gh` and `git`, but the
@@ -156,6 +155,6 @@ removed. The checks rule has no bypass for anyone.
 | `scripts/agent-session.sh` | a Claude Code session as the agent's GitHub App               |
 | `demo/record-replay.sh`    | re-record `demo/replay.svg` after the replay's output changes |
 
-Requires Node 22.18 or later and Claude Code v2.1.295 or later. The review needs `gh`,
-`jq`, and a signed-in `claude`; in CI it needs the `ANTHROPIC_API_KEY` secret
+Requires Node 22.18 or later, bash (Linux, macOS, or WSL on Windows), and Claude Code
+v2.1.295 or later. The review needs `gh`, `jq`, and a signed-in `claude`; in CI it needs the `ANTHROPIC_API_KEY` secret
 ([setup](docs/AGENT_IDENTITY.md#2-the-ci-reviewer-key)).

@@ -33,6 +33,13 @@ sha="$(git -C "$workspace/pr" rev-parse HEAD)"
   jq -r '.findings[] | "- **\(.severity)** `\(.file)\(if .line then ":\(.line)" else "" end)`: \(.issue)"' <<<"$review"
   if [ -n "${REVIEW_NOTE:-}" ]; then printf '\n%s\n' "$REVIEW_NOTE"; fi
 } >"$diff.comment"
+# The reviewer runs with the API key in its environment. Whatever it wrote, the key never
+# reaches the PR or the public log: a comment that contains it, or anything shaped like an
+# Anthropic key, isn't posted, and the check fails.
+if { [ -n "$ANTHROPIC_API_KEY" ] && grep -qF -- "$ANTHROPIC_API_KEY" "$diff.comment"; } || grep -qE 'sk-ant-[A-Za-z0-9_-]{8,}' "$diff.comment"; then
+  echo "::error::The review output contained an API key, so it wasn't posted. The owner should rotate the key."
+  exit 1
+fi
 gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$diff.comment" >/dev/null
 cat "$diff.comment"
 [ "$verdict" = "pass" ]
